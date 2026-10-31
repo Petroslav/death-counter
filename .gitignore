@@ -5,5 +5,11 @@ counter.tmp
 death_logs/
 diagnostics/
 profiles/
+profiles.json
+counter.before-profiles.json
+custom-death-reference.png
+data/
+backups/
+build-output.log
 build/
 dist/

@@ -27,7 +27,7 @@ class ScreenshotLog:
     def __init__(self, stop, on_error, monitor_index=lambda: 1):
         self.stop = stop
         self.on_error = on_error
-        self.frames = deque(maxlen=20)
+        self.frames = deque(maxlen=64)
         self.lock = threading.Lock()
         self.monitor_index = monitor_index
 
@@ -42,9 +42,20 @@ class ScreenshotLog:
                     with self.lock:
                         if index == self.monitor_index():
                             self.frames.append(frame)
+                            while self.frames and stamp - self.frames[0][0] > 12:
+                                self.frames.popleft()
                     self.stop.wait(0.25)
         except Exception as exc:
             self.on_error(f'Screenshot buffer unavailable: {exc}')
+
+    def recent_frames(self, onset):
+        with self.lock:
+            frames = list(self.frames)
+        selected = []
+        for frame in reversed(frames):
+            if 0 <= onset - frame[0] <= 10 and (not selected or selected[-1][0] - frame[0] >= 0.8):
+                selected.append(frame)
+        return selected[:12]
 
     def save(self, folder, onset):
         with self.lock:

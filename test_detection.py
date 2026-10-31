@@ -3,10 +3,19 @@ import numpy as np
 from death_detection import DeathGate, red_mask, similarity, ScreenDetector
 import cv2
 from pathlib import Path
-from app import choose_boss
+from app import choose_boss, resolve_boss
 
 
 class DetectionTests(unittest.TestCase):
+    def test_truncated_name_matches_known_boss(self):
+        self.assertEqual(resolve_boss('HUA DEADLY BETROTH', {}, ['HUA, DEADLY BETROTHED']), 'HUA, DEADLY BETROTHED')
+        self.assertEqual(resolve_boss('HUNTER OF THE EORDER', {}, ['Hunter of the Order']), 'Hunter of the Order')
+
+    def test_different_or_ambiguous_names_stay_separate(self):
+        self.assertEqual(resolve_boss('SIXFOLD SCYTHE', {}, ['HUA, DEADLY BETROTHED']), 'SIXFOLD SCYTHE')
+        self.assertEqual(resolve_boss('HUA', {}, ['HUA, DEADLY BETROTHED']), 'HUA')
+        self.assertEqual(resolve_boss('abcdefghix', {}, ['abcdefghia', 'abcdefghib']), 'abcdefghix')
+
     def test_full_screen_reference_with_black_margins(self):
         detector = ScreenDetector()
         reference = cv2.imread(str(Path(__file__).parent / 'assets' / 'death-reference.png'))
@@ -46,8 +55,13 @@ class DetectionTests(unittest.TestCase):
 
     def test_boss_window_uses_detection_onset(self):
         self.assertEqual(choose_boss([(5, 'Boss'), (5.2, 'Boss')], 10), 'Boss')
-        self.assertEqual(choose_boss([(5, 'Boss'), (5.2, 'Boss')], 10.3), 'Enemy/environment death')
+        self.assertEqual(choose_boss([(5, 'Boss'), (5.2, 'Boss')], 14.9), 'Boss')
+        self.assertEqual(choose_boss([(5, 'Boss'), (5.2, 'Boss')], 15.3), 'Enemy/environment death')
         self.assertEqual(choose_boss([], 10), 'Enemy/environment death')
+
+    def test_latest_confirmed_name_in_reverse_snapshot_order(self):
+        self.assertEqual(choose_boss([(9,'NEW'), (8,'new'), (4,'Old'), (3,'Old')],10), 'NEW')
+        self.assertEqual(choose_boss([(9,'Noise'), (8,'Boss'), (7,'Boss')],10), 'Boss')
 
 
 if __name__ == '__main__':

@@ -2,7 +2,11 @@
 
 Windows desktop counter. Press **F8 when you die**; **F9** undoes the last death.
 OCR reads a selected boss-name area locally. A name must appear in at least two
-captures within the five seconds before the hotkey to receive the death.
+captures within the ten seconds before death detection or the hotkey to receive the death.
+If live OCR has no confirmed name, the app scans up to 12 buffered snapshots from
+the preceding ten seconds, newest first, and updates the death when two readings
+agree. Lookup runs in the background. This may attribute a death to a boss seen
+within that window even if you have just left the fight.
 Otherwise the death goes to **Enemy/environment death**.
 
 ## Automatic death detection
@@ -42,7 +46,7 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
 1. Use borderless/windowed gameplay and choose the game display from the dropdown.
 2. Click **Select boss-name screen area** and select the area where boss names
    appear. The boss need not be active; avoid unrelated interface text.
-3. Return to the game. Press F8 within five seconds of the name disappearing.
+3. Return to the game. Automatic detection counts deaths; F8 covers missed deaths.
 4. Select a category and enter the correct name to merge/rename OCR mistakes.
 
 Totals, death timestamps, aliases, and the capture region persist in `counter.json`.
@@ -54,5 +58,28 @@ for a name; verify with actual gameplay. F8/F9 must be available to register glo
 Use **F7** during a death screen, then **Detection check**, to inspect the captured
 image and match score. **Restart app** reloads code and saved settings.
 
-See [ROADMAP.md](ROADMAP.md) for planned game profiles, imported death-screen
-references, and portable Windows releases.
+## Game profiles and portable version
+
+The profile dropdown switches games by restarting capture. **New game** creates a
+separate profile. Each profile owns its names, counts, screenshots, display, boss
+area, and optional uploaded red death-screen reference. New profiles start with
+automatic counting disabled. The current detector supports red death symbols;
+arbitrary colors or animated screens may require a different detector.
+
+Your existing source installation keeps using the original `counter.json` and
+image paths as the **Phantom Blade Zero** profile. First profile startup creates
+`counter.before-profiles.json` once. No image folders are moved or removed.
+
+**Export** writes a ZIP with that profile's settings, death history, available
+screenshots, and custom reference. **Import** creates an independent copy with a
+new profile ID, never overwriting another game. Export after finishing a session
+to include the newest deaths. Missing screenshots are reported during export.
+
+The portable ZIP contains `DeathCounter.exe` and `_internal/`. Extract the entire
+folder to a writable location and double-click the EXE. No installer, Python, or
+console window is needed. Its user data lives in `data/` next to the EXE. Keep
+that folder when updating. Source and EXE data locations are intentionally
+separate: to move current progress, export from the source app, close it, then
+import the ZIP inside the EXE. Do not run both counters during gameplay.
+
+See [BUILDING.md](BUILDING.md) for local builds and GitHub Actions.

@@ -1,4 +1,11 @@
-# Planned next version
+# Product roadmap
+
+Implemented: independent game profiles, ZIP export/import with screenshots,
+red-symbol reference uploads, legacy configuration backup, portable windowed
+Windows build, and GitHub Actions build verification.
+
+Remaining: support non-red death indicators, profile rename/delete controls,
+code signing, and additional real-game validation.
 
 ## Separate game profiles
 
@@ -20,5 +27,5 @@
 - Preserve user data outside bundled files across updates and restarts.
 - GitHub Actions runs tests and builds a portable ZIP for tagged releases.
 
-These features are planned; the current app uses one game's data and a built-in
-death-screen reference.
+The lists above describe the intended profile and release behavior. The current
+reference matcher supports red symbols; arbitrary death screens are not yet supported.

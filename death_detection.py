@@ -11,12 +11,14 @@ def symbol_mask(image):
 
 class ScreenDetector:
     """Search all screen positions and multiple scales for the supplied symbol."""
-    def __init__(self):
-        image = cv2.imread(str(Path(__file__).parent / 'assets' / 'death-reference.png'))
+    def __init__(self, reference_path=None):
+        image = cv2.imread(str(reference_path or Path(__file__).parent / 'assets' / 'death-reference.png'))
         if image is None:
             raise OSError('Missing built-in death-reference.png')
         mask = symbol_mask(image)
         points = cv2.findNonZero(mask)
+        if points is None or len(points) < 100:
+            raise ValueError('Reference needs a clearly visible red death symbol')
         x, y, w, h = cv2.boundingRect(points)
         self.reference = mask[y:y+h, x:x+w]
         self.cache = {}

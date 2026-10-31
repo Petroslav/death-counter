@@ -9,6 +9,14 @@ from death_log import ScreenshotLog, before_frame, encode
 
 
 class LogTests(unittest.TestCase):
+    def test_snapshot_scan_is_recent_first_and_bounded(self):
+        log = ScreenshotLog(threading.Event(), lambda _: None)
+        log.frames.extend((i/4, '', b'') for i in range(64))
+        selected = log.recent_frames(15)
+        self.assertLessEqual(len(selected),12)
+        self.assertTrue(all(0 <= 15-frame[0] <= 10 for frame in selected))
+        self.assertTrue(all(a[0] > b[0] for a,b in zip(selected,selected[1:])))
+
     def test_only_frames_one_to_two_seconds_before(self):
         frames = [(7, 'old', b''), (8.1, 'early', b''), (8.5, 'target', b''), (9.8, 'late', b'')]
         self.assertEqual(before_frame(frames, 10)[1], 'target')

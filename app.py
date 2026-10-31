@@ -13,43 +13,83 @@ import time
 import sys
 import tkinter as tk
 from datetime import datetime, timedelta
-from tkinter import ttk, messagebox
+from difflib import SequenceMatcher
+from tkinter import ttk, messagebox, filedialog, simpledialog
+from profile_store import ProfileStore
 
-DATA = Path(__file__).with_name('counter.json')
+APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+DATA_ROOT = Path(os.environ.get('DEATH_COUNTER_DATA', APP_ROOT / 'data' if getattr(sys, 'frozen', False) else APP_ROOT))
+DATA = DATA_ROOT / 'counter.json'
 
 # Some Windows Python installs omit the Tcl search path inside virtualenvs.
-for variable, folder in [('TCL_LIBRARY', 'tcl8.6'), ('TK_LIBRARY', 'tk8.6')]:
+for variable, folder in ([] if getattr(sys, 'frozen', False) else [('TCL_LIBRARY', 'tcl8.6'), ('TK_LIBRARY', 'tk8.6')]):
     library = Path(sys.base_prefix) / 'tcl' / folder
     if library.is_dir():
         os.environ.setdefault(variable, str(library))
 
 
 def choose_boss(history, now):
-    """Use names confirmed twice within the five seconds before the key press."""
-    recent = [(stamp, name) for stamp, name in history if 0 <= now - stamp <= 5]
+    """Use the most recent name confirmed twice in the preceding ten seconds."""
+    recent = sorted((stamp, name) for stamp, name in history if 0 <= now - stamp <= 10)
     counts = {}
     for _, name in recent:
-        counts[name] = counts.get(name, 0) + 1
-    confirmed = {name for name, count in counts.items() if count >= 2}
-    return next((name for _, name in reversed(recent) if name in confirmed), 'Enemy/environment death')
+        key = ' '.join(name.split()).casefold()
+        counts[key] = counts.get(key, 0) + 1
+    return next((name for _, name in reversed(recent) if counts[' '.join(name.split()).casefold()] >= 2), 'Enemy/environment death')
 
 
 def resolve_boss(name, aliases, existing=()):
+    existing = list(existing)
     key = ' '.join(name.split()).casefold()
-    if key in ('the hunt, hunter of the order', 'hunter of the order', 'unter ofthe order'):
+    if key in ('the hunt, hunter of the order', 'hunter of the order', 'unter ofthe order', 'the hunt, hunter of the eorder', 'hunter of the eorder'):
         return 'Hunter of the Order'
     for source, target in aliases.items():
         if ' '.join(source.split()).casefold() == key:
             return target
-    return next((saved for saved in existing if ' '.join(saved.split()).casefold() == key), name)
+    exact = next((saved for saved in existing if ' '.join(saved.split()).casefold() == key), None)
+    if exact:
+        return exact
+    def compact(text):
+        text = re.sub(r'^the\s+hunt\s*[,.:;-]?\s*', '', text.casefold())
+        return ''.join(c for c in text if c.isalnum())
+    query = compact(name)
+    if len(query) < 8 or key == 'enemy/environment death':
+        return name
+    scores = {}
+    candidates = [(saved, saved) for saved in existing] + list(aliases.items())
+    for source, target in candidates:
+        if target.casefold() == 'enemy/environment death':
+            continue
+        candidate = compact(source)
+        if len(candidate) < 8:
+            continue
+        score = SequenceMatcher(None, query, candidate).ratio()
+        scores[target] = max(scores.get(target, 0), score)
+    ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+    if ranked and ranked[0][1] >= 0.88 and (len(ranked) == 1 or ranked[0][1] - ranked[1][1] >= 0.06):
+        return ranked[0][0]
+    return name
+
+
+def prepare_boss_image(image):
+    import cv2
+    gray = cv2.cvtColor(image[:, :, :3], cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
 
 class Counter:
     def __init__(self, root):
+        global DATA
+        self.profiles = ProfileStore(DATA_ROOT)
+        DATA = self.profiles.data_path()
         self.root = root
         self.events = queue.Queue()
         self.history = deque(maxlen=60)
         self.lock = threading.Lock()
+        self.ocr_lock = threading.Lock()
+        self.ocr_engine = None
         self.stop = threading.Event()
         self.restart_requested = False
         self.region = None
@@ -60,14 +100,17 @@ class Counter:
         self.deaths = []
         self.last_press = 0
         self.aliases = {}
+        self.reference_path = None
         if DATA.exists():
             try:
                 saved = json.loads(DATA.read_text(encoding='utf-8'))
                 self.deaths = saved.get('deaths', [])
                 self.region = saved.get('region')
                 self.aliases = saved.get('aliases', {})
+                known = []
                 for death in self.deaths:
-                    death['boss'] = resolve_boss(death['boss'], self.aliases)
+                    death['boss'] = resolve_boss(death['boss'], self.aliases, known)
+                    known.append(death['boss'])
                 for death in self.deaths:
                     if death['boss'] == 'Exploration / Unknown':
                         death['boss'] = 'Enemy/environment death'
@@ -76,18 +119,30 @@ class Counter:
                 self.death_template = saved.get('death_template')
                 self.auto_enabled = saved.get('auto_enabled', True)
                 self.monitor_index = saved.get('monitor_index', 1)
+                self.reference_path = saved.get('reference_path')
             except (ValueError, OSError):
                 messagebox.showwarning('Saved data', 'Could not read counter.json. The original file will be preserved. Close the app and inspect it before continuing.')
                 root.destroy()
                 raise SystemExit(1)
         root.title('Death Counter')
-        root.geometry('540x610')
+        root.geometry('640x850')
         self.total = tk.StringVar()
         self.status = tk.StringVar(value='Starting OCR…')
         self.detected = tk.StringVar(value='No recent boss')
         ttk.Label(root, textvariable=self.total, font=('Segoe UI', 26, 'bold')).pack(pady=12)
         ttk.Label(root, text='F8: count death     F9: undo     F7: check detection').pack()
         ttk.Button(root, text='Restart app', command=self.restart).pack(pady=3)
+        profiles = ttk.Frame(root)
+        profiles.pack(fill='x', padx=10, pady=5)
+        self.profile_ids = list(self.profiles.state['profiles'])
+        self.profile_choice = ttk.Combobox(profiles, state='readonly', values=[self.profiles.state['profiles'][ident] for ident in self.profile_ids], width=30)
+        self.profile_choice.current(self.profile_ids.index(self.profiles.active))
+        self.profile_choice.pack(side='left', fill='x', expand=True)
+        self.profile_choice.bind('<<ComboboxSelected>>', self.switch_profile)
+        ttk.Button(profiles, text='New game', command=self.new_profile).pack(side='left', padx=3)
+        ttk.Button(profiles, text='Export', command=self.export_profile).pack(side='left')
+        ttk.Button(profiles, text='Import', command=self.import_profile).pack(side='left', padx=3)
+        ttk.Button(root, text='Upload red death-screen reference for this game', command=self.upload_reference).pack(pady=3)
         import mss
         with mss.mss() as capture:
             self.monitors = [dict(monitor) for monitor in capture.monitors[1:]]
@@ -139,8 +194,57 @@ class Counter:
 
     def save(self):
         temp = DATA.with_suffix('.tmp')
-        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index}, indent=2), encoding='utf-8')
+        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path}, indent=2), encoding='utf-8')
         temp.replace(DATA)
+
+    def switch_profile(self, _=None):
+        self.profiles.activate(self.profile_ids[self.profile_choice.current()])
+        self.restart()
+
+    def new_profile(self):
+        name = simpledialog.askstring('New game profile', 'Game name:', parent=self.root)
+        if name and name.strip():
+            ident = self.profiles.create(name)
+            self.profiles.activate(ident)
+            self.restart()
+
+    def export_profile(self):
+        path = filedialog.asksaveasfilename(parent=self.root, title='Export game profile including screenshots', defaultextension='.zip', filetypes=[('Game profile ZIP', '*.zip')])
+        if path:
+            try:
+                self.save()
+                missing = self.profiles.export(path)
+                messagebox.showinfo('Profile exported', 'Profile, settings, and available screenshots exported.' + (f' {missing} missing images could not be included.' if missing else ''))
+            except Exception as exc:
+                messagebox.showerror('Export failed', str(exc))
+
+    def import_profile(self):
+        path = filedialog.askopenfilename(parent=self.root, title='Import game profile', filetypes=[('Game profile ZIP', '*.zip')])
+        if path:
+            try:
+                ident = self.profiles.import_archive(path)
+                self.profiles.activate(ident)
+                self.restart()
+            except Exception as exc:
+                messagebox.showerror('Import failed', str(exc))
+
+    def upload_reference(self):
+        path = filedialog.askopenfilename(parent=self.root, title='Select death screen with a red symbol', filetypes=[('Images', '*.png *.jpg *.jpeg *.bmp')])
+        if path:
+            try:
+                import cv2
+                from death_detection import ScreenDetector
+                ScreenDetector(path)  # Validate before replacing a working reference.
+                image = cv2.imread(path)
+                target = DATA.parent / 'custom-death-reference.png'
+                if not cv2.imwrite(str(target), image):
+                    raise OSError('Could not save reference')
+                self.reference_path = str(target.resolve())
+                self.auto_enabled = True
+                self.save()
+                self.restart()
+            except Exception as exc:
+                messagebox.showerror('Reference not saved', str(exc))
 
     def region_description(self):
         if not self.region:
@@ -180,7 +284,7 @@ class Counter:
             folder = DATA.parent / 'diagnostics'
             folder.mkdir(exist_ok=True)
             (folder / 'capture.jpg').write_bytes(encode(image))
-            score = ScreenDetector().score(image)
+            score = ScreenDetector(self.reference_path).score(image)
             details = {'time': datetime.now().astimezone().isoformat(), 'score': score, 'threshold': 0.65, 'monitor': monitor, 'automatic_enabled': self.auto_enabled}
             (folder / 'capture.json').write_text(json.dumps(details, indent=2), encoding='utf-8')
             self.status.set(f'F7 captured screen: match {score:.0%}. Click Detection check to review.')
@@ -237,6 +341,40 @@ class Counter:
         self.save()
         self.refresh()
         self.status.set(f'Counted death for {boss}' + (f'; screenshot error: {error}' if error else ''))
+        if boss == 'Enemy/environment death' and self.region:
+            frames = self.screenshots.recent_frames(stamp)
+            region = dict(self.region)
+            monitor = dict(self.monitors[self.monitor_index - 1])
+            threading.Thread(target=self.recover_boss, args=(death, stamp, frames, region, monitor), daemon=True).start()
+
+    def recover_boss(self, death, onset, frames, region, monitor):
+        """Inspect snapshots newest first, without blocking the UI or death detector."""
+        import cv2
+        import numpy as np
+        readings = []
+        try:
+            for stamp, _, encoded in frames:
+                if self.stop.is_set():
+                    return
+                image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+                x, y = region['left']-monitor['left'], region['top']-monitor['top']
+                crop = image[max(0,y):max(0,y)+region['height'], max(0,x):max(0,x)+region['width']]
+                if not crop.size:
+                    continue
+                with self.ocr_lock:
+                    if self.ocr_engine is None:
+                        return
+                    result = self.ocr_engine(prepare_boss_image(crop))
+                name = re.sub(r'\s+', ' ', ' '.join(text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8)).strip()
+                if len(name) >= 3 and any(c.isalpha() for c in name):
+                    name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
+                    readings.append((stamp, name))
+                boss = choose_boss(readings, onset)
+                if boss != 'Enemy/environment death':
+                    self.events.put(('recovered_boss', (death, boss)))
+                    return
+        except Exception as exc:
+            self.events.put(('status', f'Death saved; snapshot boss lookup failed: {exc}'))
 
     def show_log(self):
         from PIL import Image, ImageTk
@@ -420,7 +558,7 @@ class Counter:
             import mss
             import numpy as np
             from death_detection import ScreenDetector, DeathGate
-            detector = ScreenDetector()
+            detector = ScreenDetector(self.reference_path)
             gate = DeathGate()
             previous_monitor = self.monitor_index
             with mss.mss() as capture:
@@ -450,7 +588,9 @@ class Counter:
                 def filter(self, record):
                     return 'The text detection result is empty' not in record.getMessage()
             logging.getLogger('RapidOCR').addFilter(EmptyTextFilter())
-            engine = RapidOCR()
+            with self.ocr_lock:
+                engine = RapidOCR()
+                self.ocr_engine = engine
             self.events.put(('status', 'Ready. Select the boss-name area while the boss bar is visible.'))
             with mss.mss() as capture:
                 while not self.stop.wait(0.45):
@@ -460,10 +600,12 @@ class Counter:
                         continue
                     shot = np.array(capture.grab(region))[:, :, :3]
                     captured_at = time.monotonic()
-                    result = engine(shot)
+                    with self.ocr_lock:
+                        result = engine(prepare_boss_image(shot))
                     parts = [text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8]
                     name = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
                     if len(name) >= 3 and any(c.isalpha() for c in name):
+                        name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
                         with self.lock:
                             self.history.append((captured_at, name))
                         self.events.put(('ocr_status', f'Boss-area text: {name}'))
@@ -503,6 +645,13 @@ class Counter:
                 self.undo()
             elif kind == 'diagnostic':
                 self.capture_diagnostic()
+            elif kind == 'recovered_boss':
+                death, boss = value
+                if any(entry is death for entry in self.deaths) and death['boss'] == 'Enemy/environment death':
+                    death['boss'] = resolve_boss(boss, self.aliases, (entry['boss'] for entry in self.deaths))
+                    self.save()
+                    self.refresh()
+                    self.status.set(f"Recovered boss from recent snapshots: {death['boss']}")
             elif kind == 'death_status':
                 self.death_status.set(value)
             elif kind == 'ocr_status':
@@ -524,10 +673,45 @@ class Counter:
         self.close()
 
 
+def packaged_self_test(destination):
+    """Exercise bundled Tk, assets, and all OCR stages without touching user data."""
+    import traceback
+    report = {'ok': False}
+    try:
+        import cv2
+        import numpy as np
+        from rapidocr import RapidOCR
+        from death_detection import ScreenDetector
+        root = tk.Tk()
+        root.withdraw()
+        root.update()
+        root.destroy()
+        detector = ScreenDetector()
+        reference = cv2.imread(str(Path(__file__).parent / 'assets' / 'death-reference.png'))
+        if detector.score(reference) < 0.65:
+            raise RuntimeError('Bundled reference match failed')
+        image = np.zeros((150, 700, 3), dtype=np.uint8)
+        cv2.putText(image, 'DEATH COUNTER', (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3)
+        result = RapidOCR()(image)
+        if not result.txts:
+            raise RuntimeError('Bundled OCR failed')
+        report = {'ok': True, 'ocr': list(result.txts)}
+    except Exception:
+        report['error'] = traceback.format_exc()
+    Path(destination).write_text(json.dumps(report, indent=2), encoding='utf-8')
+    return 0 if report['ok'] else 1
+
+
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--self-test':
+        raise SystemExit(packaged_self_test(sys.argv[2]))
     ctypes.windll.user32.SetProcessDPIAware()
     counter = Counter(tk.Tk())
     counter.root.mainloop()
     counter.hotkey_thread.join(timeout=2)
     if counter.restart_requested:
-        os.execl(sys.executable, sys.executable, str(Path(__file__).resolve()))
+        if getattr(sys, 'frozen', False):
+            os.environ['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+            os.execl(sys.executable, sys.executable)
+        else:
+            os.execl(sys.executable, sys.executable, str(Path(__file__).resolve()))
