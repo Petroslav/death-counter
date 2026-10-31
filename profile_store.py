@@ -58,11 +58,15 @@ class ProfileStore:
         return ident
 
     def export(self, destination):
+        destination = Path(destination)
+        if destination.suffix.lower() != '.zip':
+            raise ValueError('Choose a .zip filename for the profile export')
+        temporary = destination.with_name(destination.name + '.tmp')
         path = self.data_path()
         data = json.loads(path.read_text(encoding='utf-8'))
         data = copy.deepcopy(data)
         missing = 0
-        with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as archive:
             for index, death in enumerate(data.get('deaths', [])):
                 for kind, shot in death.get('screenshots', {}).items():
                     if not shot:
@@ -82,6 +86,7 @@ class ProfileStore:
                 archive.write(reference, 'reference.png')
                 data['reference_path'] = 'reference.png'
             archive.writestr('profile.json', json.dumps({'version': 1, 'name': self.state['profiles'][self.active], 'data': data}, indent=2))
+        temporary.replace(destination)
         return missing
 
     def import_archive(self, source):

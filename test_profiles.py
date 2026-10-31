@@ -7,6 +7,17 @@ from profile_store import ProfileStore, write_json
 
 
 class ProfileTests(unittest.TestCase):
+    def test_failed_export_preserves_previous_archive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root/'counter.json', {'deaths':[], 'reference_path':str(root/'missing.png')})
+            store = ProfileStore(root)
+            destination = root/'export.zip'
+            destination.write_bytes(b'previous-export')
+            with self.assertRaises(ValueError):
+                store.export(destination)
+            self.assertEqual(destination.read_bytes(), b'previous-export')
+
     def test_legacy_preserved_and_backed_up(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'counter.json'
