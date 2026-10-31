@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+counter.json
+counter.tmp
+death_logs/
+diagnostics/
+profiles/
+build/
+dist/
