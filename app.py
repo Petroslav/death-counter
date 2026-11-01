@@ -158,7 +158,7 @@ class Counter:
         ttk.Button(root, text='Select boss-name screen area', command=self.select_region).pack(pady=10)
         self.region_status = tk.StringVar(value=self.region_description())
         ttk.Label(root, textvariable=self.region_status, wraplength=510).pack()
-        self.ocr_status = tk.StringVar(value='Boss reader starting…')
+        self.ocr_status = tk.StringVar(value='Boss reader idle — runs only after a counted death')
         ttk.Label(root, textvariable=self.ocr_status, wraplength=510).pack()
         self.auto_var = tk.BooleanVar(value=self.auto_enabled)
         ttk.Checkbutton(root, text='Automatically count deaths', variable=self.auto_var, command=self.toggle_auto).pack(pady=5)
@@ -188,7 +188,6 @@ class Counter:
         from death_log import ScreenshotLog
         self.screenshots = ScreenshotLog(self.stop, lambda text: self.events.put(('status', text)), lambda: self.monitor_index, lambda: not self.paused.is_set())
         threading.Thread(target=self.screenshots.run, daemon=True).start()
-        threading.Thread(target=self.ocr_loop, daemon=True).start()
         self.hotkey_thread = threading.Thread(target=self.hotkeys, daemon=True)
         self.hotkey_thread.start()
         threading.Thread(target=self.death_loop, daemon=True).start()
@@ -344,9 +343,7 @@ class Counter:
         if abs(stamp - self.last_press) < 2:
             return
         self.last_press = stamp
-        with self.lock:
-            boss = choose_boss(list(self.history), stamp)
-        boss = resolve_boss(boss, self.aliases, (death['boss'] for death in self.deaths))
+        boss = 'Enemy/environment death'
         event_time = datetime.now().astimezone() - timedelta(seconds=max(0, time.monotonic() - stamp))
         death = {'boss': boss, 'time': event_time.isoformat(timespec='milliseconds')}
         error = None
@@ -360,6 +357,7 @@ class Counter:
         self.refresh()
         self.status.set(f'Counted death for {boss}' + (f'; screenshot error: {error}' if error else ''))
         if boss == 'Enemy/environment death' and self.region:
+            self.ocr_status.set('Death counted — searching the previous 10 seconds for a boss name…')
             frames = self.screenshots.recent_frames(stamp)
             region = dict(self.region)
             monitor = dict(self.monitors[self.monitor_index - 1])
@@ -371,10 +369,19 @@ class Counter:
         import numpy as np
         readings = []
         try:
+            # No model loading or OCR inference during normal gameplay.
+            with self.ocr_lock:
+                if self.ocr_engine is None:
+                    from rapidocr import RapidOCR
+                    class EmptyTextFilter(logging.Filter):
+                        def filter(self, record):
+                            return 'The text detection result is empty' not in record.getMessage()
+                    logging.getLogger('RapidOCR').addFilter(EmptyTextFilter())
+                    self.ocr_engine = RapidOCR(params={'EngineConfig.onnxruntime.intra_op_num_threads': 1, 'EngineConfig.onnxruntime.inter_op_num_threads': 1})
             for stamp, _, encoded in frames:
                 if self.stop.is_set() or self.paused.is_set():
                     return
-                image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+                image = encoded if isinstance(encoded, np.ndarray) else cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
                 scale_x, scale_y = image.shape[1]/monitor['width'], image.shape[0]/monitor['height']
                 x, y = round((region['left']-monitor['left'])*scale_x), round((region['top']-monitor['top'])*scale_y)
                 crop = image[max(0,y):max(0,y)+round(region['height']*scale_y), max(0,x):max(0,x)+round(region['width']*scale_x)]
@@ -392,6 +399,7 @@ class Counter:
                 if boss != 'Enemy/environment death':
                     self.events.put(('recovered_boss', (death, boss)))
                     return
+            self.events.put(('ocr_status', 'No confirmed boss name in previous 10 seconds — reader idle'))
         except Exception as exc:
             self.events.put(('status', f'Death saved; snapshot boss lookup failed: {exc}'))
 
@@ -601,53 +609,6 @@ class Counter:
         except Exception as exc:
             self.events.put(('death_status', f'Automatic detection unavailable: {exc}'))
 
-    def ocr_loop(self):
-        try:
-            from rapidocr import RapidOCR
-            class EmptyTextFilter(logging.Filter):
-                def filter(self, record):
-                    return 'The text detection result is empty' not in record.getMessage()
-            logging.getLogger('RapidOCR').addFilter(EmptyTextFilter())
-            with self.ocr_lock:
-                engine = RapidOCR(params={'EngineConfig.onnxruntime.intra_op_num_threads': 1, 'EngineConfig.onnxruntime.inter_op_num_threads': 1})
-                self.ocr_engine = engine
-            self.events.put(('status', 'Ready. Select the boss-name area while the boss bar is visible.'))
-            previous_stamp = None
-            while not self.stop.wait(1.0):
-                if self.paused.is_set():
-                    continue
-                region = self.region
-                if not region:
-                    self.events.put(('ocr_status', 'Boss reader OFF — select a boss-name area first'))
-                    continue
-                latest = self.screenshots.latest_frame()
-                if latest is None:
-                    continue
-                index, captured_at, frame = latest
-                if index != self.monitor_index or captured_at == previous_stamp:
-                    continue
-                previous_stamp = captured_at
-                monitor = self.monitors[index-1]
-                x, y = region['left']-monitor['left'], region['top']-monitor['top']
-                shot = frame[max(0,y):min(frame.shape[0],y+region['height']), max(0,x):min(frame.shape[1],x+region['width']), :3]
-                if not shot.size:
-                    continue
-                with self.ocr_lock:
-                    result = engine(prepare_boss_image(shot))
-                if self.paused.is_set() or index != self.monitor_index:
-                    continue
-                parts = [text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8]
-                name = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
-                if len(name) >= 3 and any(c.isalpha() for c in name):
-                    name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
-                    with self.lock:
-                        self.history.append((captured_at, name))
-                    self.events.put(('ocr_status', f'Boss-area text: {name}'))
-                else:
-                    self.events.put(('ocr_status', 'No boss text visible — normal outside a boss fight'))
-        except Exception as exc:
-            self.events.put(('status', f'OCR unavailable: {exc}. Manual count and undo still work.'))
-
     def hotkeys(self):
         user32 = ctypes.windll.user32
         # MOD_NOREPEAT suppresses repeated key-down messages while held.
@@ -686,15 +647,14 @@ class Counter:
                     self.save()
                     self.refresh()
                     self.status.set(f"Recovered boss from recent snapshots: {death['boss']}")
+                    self.ocr_status.set(f"Last death boss: {death['boss']} — reader idle")
             elif kind == 'death_status':
                 self.death_status.set(value)
             elif kind == 'ocr_status':
                 self.ocr_status.set(value)
             else:
                 self.status.set(value)
-        with self.lock:
-            name = choose_boss(list(self.history), time.monotonic())
-        self.detected.set('Recent boss: ' + self.aliases.get(name, name))
+        self.detected.set('Boss names are checked after each counted death')
         self.root.after(100, self.poll)
 
     def close(self):

@@ -55,18 +55,18 @@ class ScreenshotLog:
                     image = np.array(capture.grab(capture.monitors[index]))
                     stamp, wall = time.monotonic(), datetime.now().astimezone().isoformat(timespec='milliseconds')
                     # One full-resolution frame is shared by OCR and detection.
-                    # The longer history uses smaller JPEGs to bound CPU and RAM.
+                    # Keep resized pixels in RAM; compress only saved death evidence.
                     height, width = image.shape[:2]
                     ratio = min(1.0, 1600 / width)
                     preview = cv2.resize(image[:, :, :3], (round(width*ratio), round(height*ratio))) if ratio < 1 else image
-                    frame = (stamp, wall, encode(preview))
+                    frame = (stamp, wall, preview[:, :, :3].copy())
                     with self.lock:
                         if index == self.monitor_index() and self.enabled():
                             self.latest = (index, stamp, image)
                             self.frames.append(frame)
                             while self.frames and stamp - self.frames[0][0] > 12:
                                 self.frames.popleft()
-                    self.stop.wait(max(0, 0.5 - (time.monotonic() - started)))
+                    self.stop.wait(max(0, 1.0 - (time.monotonic() - started)))
         except Exception as exc:
             self.on_error(f'Screenshot buffer unavailable: {exc}')
 
@@ -87,7 +87,7 @@ class ScreenshotLog:
         result = {'before': None, 'death': None}
         if before is not None:
             path = folder / 'before.jpg'
-            path.write_bytes(before[2])
+            path.write_bytes(encode(before[2]) if isinstance(before[2], np.ndarray) else before[2])
             result['before'] = {'path': str(path.resolve()), 'time': before[1], 'seconds_before': round(onset - before[0], 3)}
         with mss.mss() as capture:
             image = np.array(capture.grab(capture.monitors[self.monitor_index()]))

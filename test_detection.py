@@ -3,10 +3,34 @@ import numpy as np
 from death_detection import DeathGate, red_mask, similarity, ScreenDetector
 import cv2
 from pathlib import Path
+import threading
+import queue
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from app import Counter
 from app import choose_boss, resolve_boss
 
 
 class DetectionTests(unittest.TestCase):
+    def test_boss_lookup_reads_raw_snapshots_after_death(self):
+        counter = Counter.__new__(Counter)
+        counter.stop = threading.Event()
+        counter.paused = threading.Event()
+        counter.ocr_lock = threading.Lock()
+        counter.ocr_engine = Mock(return_value=SimpleNamespace(txts=['HUA, DEADLY BETROTHED'], scores=[0.99]))
+        counter.aliases = {}
+        counter.deaths = []
+        counter.events = queue.Queue()
+        image = np.zeros((90,160,3),dtype=np.uint8)
+        death = {'boss':'Enemy/environment death'}
+        with patch('cv2.imdecode') as decode:
+            counter.recover_boss(death,10,[(9,'',image),(8,'',image),(7,'',image)],{'left':0,'top':0,'width':100,'height':30},{'left':0,'top':0,'width':160,'height':90})
+            decode.assert_not_called()
+        self.assertEqual(counter.ocr_engine.call_count,2)
+        kind,payload=counter.events.get_nowait()
+        self.assertEqual(kind,'recovered_boss')
+        self.assertEqual(payload[1],'HUA, DEADLY BETROTHED')
+
     def test_two_fps_counts_once_and_rearms(self):
         gate = DeathGate()
         counts = []
@@ -15,6 +39,15 @@ class DetectionTests(unittest.TestCase):
             if onset is not None:
                 counts.append(onset)
         self.assertEqual(counts,[0.5,4.5])
+
+    def test_one_second_samples_count_once_and_rearm(self):
+        gate = DeathGate()
+        counts=[]
+        for stamp,matched in [(0,False),(1,True),(2,True),(3,True),(4,False),(5,False),(6,False),(7,True),(8,True)]:
+            onset=gate.update(matched,stamp)
+            if onset is not None:
+                counts.append(onset)
+        self.assertEqual(counts,[1,7])
 
     def test_truncated_name_matches_known_boss(self):
         self.assertEqual(resolve_boss('HUA DEADLY BETROTH', {}, ['HUA, DEADLY BETROTHED']), 'HUA, DEADLY BETROTHED')

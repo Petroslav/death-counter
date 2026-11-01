@@ -40,9 +40,9 @@ class LogTests(unittest.TestCase):
                 stop.wait(0.01)
             stop.set()
             worker.join(1)
-            self.assertEqual(encoder.call_args[0][0].shape[:2],(900,1600))
+            encoder.assert_not_called()
         self.assertEqual(log.latest_frame()[2].shape,(1440,2560,4))
-        self.assertEqual(log.frames[0][2],b'jpeg')
+        self.assertEqual(log.frames[0][2].shape,(900,1600,3))
 
     def test_snapshot_scan_is_recent_first_and_bounded(self):
         log = ScreenshotLog(threading.Event(), lambda _: None)
@@ -60,7 +60,7 @@ class LogTests(unittest.TestCase):
     def test_evidence_files_and_timestamps(self):
         image = np.zeros((60, 80, 4), dtype=np.uint8)
         log = ScreenshotLog(threading.Event(), lambda _: None)
-        log.frames.append((8.5, '2026-10-31T10:00:00.000+02:00', encode(image)))
+        log.frames.append((8.5, '2026-10-31T10:00:00.000+02:00', image[:, :, :3].copy()))
         with tempfile.TemporaryDirectory() as folder, patch('death_log.mss.mss') as capture:
             capture.return_value.__enter__.return_value.monitors = [None, {}]
             capture.return_value.__enter__.return_value.grab.return_value = image

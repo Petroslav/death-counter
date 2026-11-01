@@ -1,9 +1,9 @@
 # Death Counter
 
 Windows desktop counter. Press **F8 when you die**; **F9** undoes the last death.
-OCR reads a selected boss-name area locally. A name must appear in at least two
+After a death, OCR reads a selected boss-name area locally. A name must appear in at least two
 captures within the ten seconds before death detection or the hotkey to receive the death.
-If live OCR has no confirmed name, the app scans up to 12 buffered snapshots from
+The app scans buffered snapshots from
 the preceding ten seconds, newest first, and updates the death when two readings
 agree. Lookup runs in the background. This may attribute a death to a boss seen
 within that window even if you have just left the fight.
@@ -25,7 +25,7 @@ Actual gameplay accuracy still needs validation.
 Click **Death log / screenshots** to browse deaths and view both timestamped images
 side by side inside the app. Select an entry or use **Previous** / **Next**;
 **Refresh log** loads new entries. A short selected-monitor screenshot buffer runs in memory at
-roughly two frames per second. Only counted deaths write screenshots to
+roughly one frame per second. Only counted deaths write screenshots to
 `death_logs/`: the closest available frame 1–2 seconds before detection (target
 1.5 seconds), and a fresh capture when the death is recorded. Timestamps include
 the local UTC offset and milliseconds. No before image is substituted if none
@@ -62,19 +62,22 @@ image and match score. **Restart app** reloads code and saved settings.
 
 ## Performance and pause
 
-A single full-resolution capture loop supplies death detection and boss OCR.
-Capture and death detection run at up to two frames per second; OCR runs at up
-to one frame per second. Each image is processed once per consumer. OCR inference
+A single capture loop captures and checks for the death screen once per second.
+Two matching samples confirm the death. Boss OCR does not load or run during
+ordinary gameplay: only after a confirmed death or F8 count does it search the
+previous ten seconds, newest first. Two agreeing names are required. OCR inference
 and OpenCV are limited to one CPU thread each to reduce contention with games.
-The 12-second history stores smaller JPEGs; OCR and detection use the full image.
-Background snapshot recovery still reads the ten seconds preceding a death.
+The 12-second history stores resized, uncompressed pixels in RAM. Compression
+occurs only when saving the two death-log screenshots (or an F7 diagnostic).
+At 1600×900, twelve RGB frames take about 52 MB, plus the latest full-resolution
+capture. Buffering still has capture/copy/resize costs but no routine JPEG encoding.
 
 **Pause all capture and processing** stops background screenshots, OCR, and death
 detection and clears recent image/name history. Resume before playing again;
 the history needs time to refill. Pause also disables manual counts and F7 capture.
 Use pause when playing a different game: automatic process/window tracking is not
 implemented yet. Turning off only **Automatically count deaths** leaves the
-screenshot buffer and boss-name reader running.
+screenshot buffer running; OCR still runs only after an F8 count.
 
 ## Game profiles and portable version
 
