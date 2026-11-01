@@ -24,7 +24,7 @@ class LogTests(unittest.TestCase):
         self.assertEqual(len(log.frames),0)
         self.assertIsNone(log.latest_frame())
 
-    def test_shared_frame_and_small_history(self):
+    def test_shared_frame_and_full_resolution_history(self):
         stop = threading.Event()
         image = np.zeros((1440,2560,4),dtype=np.uint8)
         log = ScreenshotLog(stop, self.fail)
@@ -42,7 +42,7 @@ class LogTests(unittest.TestCase):
             worker.join(1)
             encoder.assert_not_called()
         self.assertEqual(log.latest_frame()[2].shape,(1440,2560,4))
-        self.assertEqual(log.frames[0][2].shape,(900,1600,3))
+        self.assertEqual(log.frames[0][2].shape,(1440,2560,3))
 
     def test_snapshot_scan_is_recent_first_and_bounded(self):
         log = ScreenshotLog(threading.Event(), lambda _: None)

@@ -55,11 +55,8 @@ class ScreenshotLog:
                     image = np.array(capture.grab(capture.monitors[index]))
                     stamp, wall = time.monotonic(), datetime.now().astimezone().isoformat(timespec='milliseconds')
                     # One full-resolution frame is shared by OCR and detection.
-                    # Keep resized pixels in RAM; compress only saved death evidence.
-                    height, width = image.shape[:2]
-                    ratio = min(1.0, 1600 / width)
-                    preview = cv2.resize(image[:, :, :3], (round(width*ratio), round(height*ratio))) if ratio < 1 else image
-                    frame = (stamp, wall, preview[:, :, :3].copy())
+                    # Full-resolution pixels retain fine lettering for post-death OCR.
+                    frame = (stamp, wall, image[:, :, :3].copy())
                     with self.lock:
                         if index == self.monitor_index() and self.enabled():
                             self.latest = (index, stamp, image)

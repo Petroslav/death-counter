@@ -34,8 +34,7 @@ is relative to the key press, so press while the death screen is visible.
 
 Captures cover the whole selected monitor, including any visible desktop windows.
 Images stay local. Undo removes the counted entry but preserves its files on disk.
-Buffered before images are limited to 1600 pixels wide to reduce encoding work;
-death-screen images are captured at full resolution when a death is counted.
+Buffered before images and saved death-screen images retain full resolution.
 Existing deaths have no retroactive screenshots. Screenshots accumulate until you
 remove their folders manually. The log window is a snapshot; reopen it to refresh.
 
@@ -50,6 +49,22 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
    appear. The boss need not be active; avoid unrelated interface text.
 3. Return to the game. Automatic detection counts deaths; F8 covers missed deaths.
 4. Select a category and enter the correct name to merge/rename OCR mistakes.
+
+## Correcting deaths in the app
+
+- **Merge selected boss categories…**: Ctrl-click categories in the main table,
+  click Merge, and choose an existing category or type the correct name. Their
+  counts combine and spelling aliases are remembered for future readings.
+- **Move selected death(s)…**: open **Death log / screenshots**, select the entries
+  (Ctrl/Shift-click for several), click Move, and choose a target category. This
+  changes only those entries; it does not redirect future environment deaths.
+- **Rename selected boss** still renames an entire category and merges into an
+  existing name when applicable.
+
+All edits preserve timestamps and screenshot links, and create a JSON backup in
+the active profile's `backups/` directory. Manually assigned deaths are protected
+from later automatic OCR reassignment. OCR boxes are assembled left to right;
+known names with the same words in a different order reuse the same category.
 
 Totals, death timestamps, aliases, and the capture region persist in `counter.json`.
 Undo removes the latest death across sessions. Back up that JSON to keep a copy.
@@ -67,10 +82,11 @@ Two matching samples confirm the death. Boss OCR does not load or run during
 ordinary gameplay: only after a confirmed death or F8 count does it search the
 previous ten seconds, newest first. Two agreeing names are required. OCR inference
 and OpenCV are limited to one CPU thread each to reduce contention with games.
-The 12-second history stores resized, uncompressed pixels in RAM. Compression
+The 12-second history stores full-resolution, uncompressed pixels in RAM. Compression
 occurs only when saving the two death-log screenshots (or an F7 diagnostic).
-At 1600×900, twelve RGB frames take about 52 MB, plus the latest full-resolution
-capture. Buffering still has capture/copy/resize costs but no routine JPEG encoding.
+At 2560×1440, twelve RGB frames take about 133 MB, plus the latest capture and
+application overhead (about 150–160 MB of image buffers). 4K uses more memory.
+Buffering still has capture/copy costs but no routine JPEG encoding.
 
 **Pause all capture and processing** stops background screenshots, OCR, and death
 detection and clears recent image/name history. Resume before playing again;

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from profile_store import ProfileStore
+from death_edits import merge_categories, transfer_deaths
 
 APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA_ROOT = Path(os.environ.get('DEATH_COUNTER_DATA', APP_ROOT / 'data' if getattr(sys, 'frozen', False) else APP_ROOT))
@@ -49,6 +50,11 @@ def resolve_boss(name, aliases, existing=()):
     exact = next((saved for saved in existing if ' '.join(saved.split()).casefold() == key), None)
     if exact:
         return exact
+    tokens = sorted(re.findall(r'\w+', key))
+    if len(tokens) >= 3 and len(''.join(tokens)) >= 8:
+        matches = {target for source, target in ([(saved,saved) for saved in existing] + list(aliases.items())) if sorted(re.findall(r'\w+',source.casefold())) == tokens}
+        if len(matches) == 1:
+            return matches.pop()
     def compact(text):
         text = re.sub(r'^the\s+hunt\s*[,.:;-]?\s*', '', text.casefold())
         return ''.join(c for c in text if c.isalnum())
@@ -77,6 +83,14 @@ def prepare_boss_image(image):
     gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
     enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
     return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+
+
+def boss_text(result):
+    parts = [(i,text.strip()) for i,(text,score) in enumerate(zip(result.txts or [],result.scores or [])) if score >= 0.8]
+    boxes = getattr(result,'boxes',None)
+    if boxes is not None and len(boxes) == len(result.txts or []):
+        parts.sort(key=lambda part: sum(float(point[0]) for point in boxes[part[0]])/len(boxes[part[0]]))
+    return re.sub(r'\s+', ' ', ' '.join(text for _,text in parts)).strip()
 
 
 class Counter:
@@ -110,7 +124,8 @@ class Counter:
                 self.aliases = saved.get('aliases', {})
                 known = []
                 for death in self.deaths:
-                    death['boss'] = resolve_boss(death['boss'], self.aliases, known)
+                    if not death.get('manual_assignment'):
+                        death['boss'] = resolve_boss(death['boss'], self.aliases, known)
                     known.append(death['boss'])
                 for death in self.deaths:
                     if death['boss'] == 'Exploration / Unknown':
@@ -183,6 +198,7 @@ class Counter:
         self.correction = ttk.Entry(edit)
         self.correction.pack(side='left', fill='x', expand=True)
         ttk.Button(edit, text='Rename selected boss', command=self.rename).pack(side='left', padx=5)
+        ttk.Button(root, text='Merge selected boss categories… (Ctrl-click to select several)', command=self.merge_selected).pack(pady=(0,8))
         self.save()
         self.refresh()
         from death_log import ScreenshotLog
@@ -391,7 +407,7 @@ class Counter:
                     if self.ocr_engine is None:
                         return
                     result = self.ocr_engine(prepare_boss_image(crop))
-                name = re.sub(r'\s+', ' ', ' '.join(text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8)).strip()
+                name = boss_text(result)
                 if len(name) >= 3 and any(c.isalpha() for c in name):
                     name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
                     readings.append((stamp, name))
@@ -453,15 +469,19 @@ class Counter:
                 except (OSError, ValueError) as exc:
                     picture.configure(text=f'Cannot load screenshot: {exc}', wraplength=400)
         def refresh_log():
+            selected_deaths = {id(entries[item]) for item in table.selection() if item in entries}
             table.delete(*table.get_children())
             entries.clear()
+            restored = []
             for death in reversed(self.deaths):
                 shots = death.get('screenshots', {})
                 before, current = shots.get('before'), shots.get('death')
                 ident = table.insert('', 'end', values=(death['time'], death['boss'], before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable'))
                 entries[ident] = death
+                if id(death) in selected_deaths:
+                    restored.append(ident)
             if entries:
-                table.selection_set(next(iter(entries)))
+                table.selection_set(restored or [next(iter(entries))])
                 display()
             else:
                 for caption, picture in panels.values():
@@ -477,12 +497,26 @@ class Counter:
             target = items[max(0, min(len(items)-1, index + direction))]
             table.selection_set(target)
             table.see(target)
+        def move_selected():
+            chosen = [entries[item] for item in table.selection() if item in entries]
+            if not chosen:
+                return
+            target = self.pick_category(f'Move {len(chosen)} selected death(s)', chosen[0]['boss'], window)
+            if target:
+                self.backup_before_edit()
+                transfer_deaths(self.deaths, chosen, target)
+                self.save()
+                self.refresh()
+                refresh_log()
+                self.status.set(f'Moved {len(chosen)} death(s) to {target}')
         table.bind('<<TreeviewSelect>>', display)
         actions = ttk.Frame(window)
         actions.pack(pady=(0, 10))
         ttk.Button(actions, text='Previous', command=lambda: navigate(-1)).pack(side='left', padx=5)
         ttk.Button(actions, text='Next', command=lambda: navigate(1)).pack(side='left', padx=5)
         ttk.Button(actions, text='Refresh log', command=refresh_log).pack(side='left', padx=5)
+        ttk.Button(actions, text='Move selected death(s)…', command=move_selected).pack(side='left', padx=5)
+        ttk.Label(window, text='Ctrl-click or Shift-click rows to move multiple deaths. Screenshots and timestamps stay attached.').pack(pady=(0,8))
         window.after(100, refresh_log)
 
     def undo(self):
@@ -498,15 +532,57 @@ class Counter:
         if not selected or not new:
             return
         old = self.table.item(selected[0], 'values')[0]
-        for death in self.deaths:
-            if death['boss'] == old:
-                death['boss'] = new
-        for key, value in list(self.aliases.items()):
-            if value == old:
-                self.aliases[key] = new
-        self.aliases[old] = new
+        self.backup_before_edit()
+        merge_categories(self.deaths, self.aliases, [old], new)
         self.save()
         self.refresh()
+
+    def backup_before_edit(self):
+        import shutil
+        if DATA.exists():
+            folder = DATA.parent / 'backups'
+            folder.mkdir(exist_ok=True)
+            shutil.copy2(DATA,folder / f"before-edit-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json")
+
+    def pick_category(self, title, initial='', parent=None):
+        dialog = tk.Toplevel(parent or self.root)
+        dialog.title(title)
+        dialog.transient(parent or self.root)
+        dialog.grab_set()
+        ttk.Label(dialog,text='Choose an existing category or type a new name:').pack(padx=15,pady=10)
+        choices = sorted({death['boss'] for death in self.deaths} | {'Enemy/environment death'})
+        target = ttk.Combobox(dialog,values=choices,width=55)
+        target.set(initial)
+        target.pack(padx=15,pady=5)
+        result=[]
+        def accept():
+            name=target.get().strip()
+            if name:
+                name=next((choice for choice in choices if choice.casefold()==name.casefold()),name)
+                result.append(name)
+                dialog.destroy()
+        actions=ttk.Frame(dialog)
+        actions.pack(pady=12)
+        ttk.Button(actions,text='Apply',command=accept).pack(side='left',padx=5)
+        ttk.Button(actions,text='Cancel',command=dialog.destroy).pack(side='left')
+        dialog.bind('<Return>',lambda _:accept())
+        dialog.bind('<Escape>',lambda _:dialog.destroy())
+        target.focus_set()
+        self.root.wait_window(dialog)
+        return result[0] if result else None
+
+    def merge_selected(self):
+        sources=[self.table.item(item,'values')[0] for item in self.table.selection()]
+        if not sources:
+            self.status.set('Select the boss categories to merge first (Ctrl-click for several).')
+            return
+        target=self.pick_category('Merge selected categories',sources[0])
+        if target:
+            self.backup_before_edit()
+            changed=merge_categories(self.deaths,self.aliases,sources,target)
+            self.save()
+            self.refresh()
+            self.status.set(f'Merged {changed} death(s) into {target}')
 
     def toggle_auto(self):
         self.auto_enabled = self.auto_var.get()
@@ -642,7 +718,7 @@ class Counter:
                 self.capture_diagnostic()
             elif kind == 'recovered_boss':
                 death, boss = value
-                if any(entry is death for entry in self.deaths) and death['boss'] == 'Enemy/environment death':
+                if any(entry is death for entry in self.deaths) and death['boss'] == 'Enemy/environment death' and not death.get('manual_assignment'):
                     death['boss'] = resolve_boss(boss, self.aliases, (entry['boss'] for entry in self.deaths))
                     self.save()
                     self.refresh()
