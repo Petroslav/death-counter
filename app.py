@@ -91,6 +91,7 @@ class Counter:
         self.ocr_lock = threading.Lock()
         self.ocr_engine = None
         self.stop = threading.Event()
+        self.paused = threading.Event()
         self.restart_requested = False
         self.region = None
         self.death_region = None
@@ -132,6 +133,8 @@ class Counter:
         ttk.Label(root, textvariable=self.total, font=('Segoe UI', 26, 'bold')).pack(pady=12)
         ttk.Label(root, text='F8: count death     F9: undo     F7: check detection').pack()
         ttk.Button(root, text='Restart app', command=self.restart).pack(pady=3)
+        self.pause_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(root, text='Pause all capture and processing', variable=self.pause_var, command=self.toggle_pause).pack()
         profiles = ttk.Frame(root)
         profiles.pack(fill='x', padx=10, pady=5)
         self.profile_ids = list(self.profiles.state['profiles'])
@@ -183,7 +186,7 @@ class Counter:
         self.save()
         self.refresh()
         from death_log import ScreenshotLog
-        self.screenshots = ScreenshotLog(self.stop, lambda text: self.events.put(('status', text)), lambda: self.monitor_index)
+        self.screenshots = ScreenshotLog(self.stop, lambda text: self.events.put(('status', text)), lambda: self.monitor_index, lambda: not self.paused.is_set())
         threading.Thread(target=self.screenshots.run, daemon=True).start()
         threading.Thread(target=self.ocr_loop, daemon=True).start()
         self.hotkey_thread = threading.Thread(target=self.hotkeys, daemon=True)
@@ -196,6 +199,17 @@ class Counter:
         temp = DATA.with_suffix('.tmp')
         temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path}, indent=2), encoding='utf-8')
         temp.replace(DATA)
+
+    def toggle_pause(self):
+        if self.pause_var.get():
+            self.paused.set()
+            self.screenshots.clear()
+            with self.lock:
+                self.history.clear()
+            self.status.set('Paused — no screenshots, OCR, or automatic counting')
+        else:
+            self.paused.clear()
+            self.status.set('Capture resumed')
 
     def switch_profile(self, _=None):
         self.profiles.activate(self.profile_ids[self.profile_choice.current()])
@@ -266,13 +280,15 @@ class Counter:
             }
         with self.lock:
             self.history.clear()
-        with self.screenshots.lock:
-            self.screenshots.frames.clear()
+        self.screenshots.clear()
         self.region_status.set(self.region_description())
         self.save()
         self.status.set('Display saved. Boss area moved to this display; check its position if the HUD differs.')
 
     def capture_diagnostic(self):
+        if self.paused.is_set():
+            self.status.set('Capture is paused. Resume before taking a detection check.')
+            return
         try:
             import mss
             import numpy as np
@@ -323,6 +339,8 @@ class Counter:
             self.table.insert('', 'end', values=(name, count))
 
     def count(self, stamp):
+        if self.paused.is_set():
+            return
         if abs(stamp - self.last_press) < 2:
             return
         self.last_press = stamp
@@ -354,11 +372,12 @@ class Counter:
         readings = []
         try:
             for stamp, _, encoded in frames:
-                if self.stop.is_set():
+                if self.stop.is_set() or self.paused.is_set():
                     return
                 image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
-                x, y = region['left']-monitor['left'], region['top']-monitor['top']
-                crop = image[max(0,y):max(0,y)+region['height'], max(0,x):max(0,x)+region['width']]
+                scale_x, scale_y = image.shape[1]/monitor['width'], image.shape[0]/monitor['height']
+                x, y = round((region['left']-monitor['left'])*scale_x), round((region['top']-monitor['top'])*scale_y)
+                crop = image[max(0,y):max(0,y)+round(region['height']*scale_y), max(0,x):max(0,x)+round(region['width']*scale_x)]
                 if not crop.size:
                     continue
                 with self.ocr_lock:
@@ -555,62 +574,77 @@ class Counter:
 
     def death_loop(self):
         try:
-            import mss
-            import numpy as np
             from death_detection import ScreenDetector, DeathGate
             detector = ScreenDetector(self.reference_path)
             gate = DeathGate()
             previous_monitor = self.monitor_index
-            with mss.mss() as capture:
-                while not self.stop.wait(0.12):
-                    if self.monitor_index != previous_monitor:
-                        gate = DeathGate()
-                        previous_monitor = self.monitor_index
-                    if not self.auto_enabled:
-                        gate = DeathGate()
-                        continue
-                    frame = np.array(capture.grab(capture.monitors[self.monitor_index]))
-                    stamp = time.monotonic()
-                    score = detector.score(frame)
-                    onset = gate.update(score >= 0.65, stamp)
-                    self.events.put(('death_status', f'Death symbol match: {score:.0%}' + (' — waiting for symbol to clear' if gate.active else ' — watching')))
-                    if onset is not None:
-                        self.events.put(('death', onset))
+            previous_stamp = None
+            while not self.stop.wait(0.1):
+                if self.monitor_index != previous_monitor:
+                    gate = DeathGate()
+                    previous_monitor = self.monitor_index
+                if not self.auto_enabled or self.paused.is_set():
+                    gate = DeathGate()
+                    continue
+                latest = self.screenshots.latest_frame()
+                if latest is None:
+                    continue
+                index, stamp, frame = latest
+                if index != self.monitor_index or stamp == previous_stamp:
+                    continue
+                previous_stamp = stamp
+                score = detector.score(frame)
+                onset = gate.update(score >= 0.65, stamp)
+                self.events.put(('death_status', f'Death symbol match: {score:.0%}' + (' — waiting for symbol to clear' if gate.active else ' — watching')))
+                if onset is not None:
+                    self.events.put(('death', onset))
         except Exception as exc:
             self.events.put(('death_status', f'Automatic detection unavailable: {exc}'))
 
     def ocr_loop(self):
         try:
-            import mss
-            import numpy as np
             from rapidocr import RapidOCR
             class EmptyTextFilter(logging.Filter):
                 def filter(self, record):
                     return 'The text detection result is empty' not in record.getMessage()
             logging.getLogger('RapidOCR').addFilter(EmptyTextFilter())
             with self.ocr_lock:
-                engine = RapidOCR()
+                engine = RapidOCR(params={'EngineConfig.onnxruntime.intra_op_num_threads': 1, 'EngineConfig.onnxruntime.inter_op_num_threads': 1})
                 self.ocr_engine = engine
             self.events.put(('status', 'Ready. Select the boss-name area while the boss bar is visible.'))
-            with mss.mss() as capture:
-                while not self.stop.wait(0.45):
-                    region = self.region
-                    if not region:
-                        self.events.put(('ocr_status', 'Boss reader OFF — select a boss-name area first'))
-                        continue
-                    shot = np.array(capture.grab(region))[:, :, :3]
-                    captured_at = time.monotonic()
-                    with self.ocr_lock:
-                        result = engine(prepare_boss_image(shot))
-                    parts = [text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8]
-                    name = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
-                    if len(name) >= 3 and any(c.isalpha() for c in name):
-                        name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
-                        with self.lock:
-                            self.history.append((captured_at, name))
-                        self.events.put(('ocr_status', f'Boss-area text: {name}'))
-                    else:
-                        self.events.put(('ocr_status', 'No boss text visible — normal outside a boss fight'))
+            previous_stamp = None
+            while not self.stop.wait(1.0):
+                if self.paused.is_set():
+                    continue
+                region = self.region
+                if not region:
+                    self.events.put(('ocr_status', 'Boss reader OFF — select a boss-name area first'))
+                    continue
+                latest = self.screenshots.latest_frame()
+                if latest is None:
+                    continue
+                index, captured_at, frame = latest
+                if index != self.monitor_index or captured_at == previous_stamp:
+                    continue
+                previous_stamp = captured_at
+                monitor = self.monitors[index-1]
+                x, y = region['left']-monitor['left'], region['top']-monitor['top']
+                shot = frame[max(0,y):min(frame.shape[0],y+region['height']), max(0,x):min(frame.shape[1],x+region['width']), :3]
+                if not shot.size:
+                    continue
+                with self.ocr_lock:
+                    result = engine(prepare_boss_image(shot))
+                if self.paused.is_set() or index != self.monitor_index:
+                    continue
+                parts = [text.strip() for text, score in zip(result.txts or [], result.scores or []) if score >= 0.8]
+                name = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
+                if len(name) >= 3 and any(c.isalpha() for c in name):
+                    name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
+                    with self.lock:
+                        self.history.append((captured_at, name))
+                    self.events.put(('ocr_status', f'Boss-area text: {name}'))
+                else:
+                    self.events.put(('ocr_status', 'No boss text visible — normal outside a boss fight'))
         except Exception as exc:
             self.events.put(('status', f'OCR unavailable: {exc}. Manual count and undo still work.'))
 

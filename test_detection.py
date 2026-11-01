@@ -7,6 +7,15 @@ from app import choose_boss, resolve_boss
 
 
 class DetectionTests(unittest.TestCase):
+    def test_two_fps_counts_once_and_rearms(self):
+        gate = DeathGate()
+        counts = []
+        for stamp, matched in [(0,False),(0.5,True),(1,True),(1.5,True),(2,False),(2.5,False),(3,False),(3.5,False),(4,False),(4.5,True),(5,True)]:
+            onset=gate.update(matched,stamp)
+            if onset is not None:
+                counts.append(onset)
+        self.assertEqual(counts,[0.5,4.5])
+
     def test_truncated_name_matches_known_boss(self):
         self.assertEqual(resolve_boss('HUA DEADLY BETROTH', {}, ['HUA, DEADLY BETROTHED']), 'HUA, DEADLY BETROTHED')
         self.assertEqual(resolve_boss('HUNTER OF THE EORDER', {}, ['Hunter of the Order']), 'Hunter of the Order')

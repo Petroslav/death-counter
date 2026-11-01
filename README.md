@@ -25,7 +25,7 @@ Actual gameplay accuracy still needs validation.
 Click **Death log / screenshots** to browse deaths and view both timestamped images
 side by side inside the app. Select an entry or use **Previous** / **Next**;
 **Refresh log** loads new entries. A short selected-monitor screenshot buffer runs in memory at
-roughly four frames per second. Only counted deaths write screenshots to
+roughly two frames per second. Only counted deaths write screenshots to
 `death_logs/`: the closest available frame 1–2 seconds before detection (target
 1.5 seconds), and a fresh capture when the death is recorded. Timestamps include
 the local UTC offset and milliseconds. No before image is substituted if none
@@ -34,6 +34,8 @@ is relative to the key press, so press while the death screen is visible.
 
 Captures cover the whole selected monitor, including any visible desktop windows.
 Images stay local. Undo removes the counted entry but preserves its files on disk.
+Buffered before images are limited to 1600 pixels wide to reduce encoding work;
+death-screen images are captured at full resolution when a death is counted.
 Existing deaths have no retroactive screenshots. Screenshots accumulate until you
 remove their folders manually. The log window is a snapshot; reopen it to refresh.
 
@@ -57,6 +59,22 @@ for a name; verify with actual gameplay. F8/F9 must be available to register glo
 
 Use **F7** during a death screen, then **Detection check**, to inspect the captured
 image and match score. **Restart app** reloads code and saved settings.
+
+## Performance and pause
+
+A single full-resolution capture loop supplies death detection and boss OCR.
+Capture and death detection run at up to two frames per second; OCR runs at up
+to one frame per second. Each image is processed once per consumer. OCR inference
+and OpenCV are limited to one CPU thread each to reduce contention with games.
+The 12-second history stores smaller JPEGs; OCR and detection use the full image.
+Background snapshot recovery still reads the ten seconds preceding a death.
+
+**Pause all capture and processing** stops background screenshots, OCR, and death
+detection and clears recent image/name history. Resume before playing again;
+the history needs time to refill. Pause also disables manual counts and F7 capture.
+Use pause when playing a different game: automatic process/window tracking is not
+implemented yet. Turning off only **Automatically count deaths** leaves the
+screenshot buffer and boss-name reader running.
 
 ## Game profiles and portable version
 

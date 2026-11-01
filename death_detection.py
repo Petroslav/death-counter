@@ -3,6 +3,9 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+# Avoid OpenCV waking a pool across every CPU core while a game is running.
+cv2.setNumThreads(1)
+
 
 def symbol_mask(image):
     b, g, r = cv2.split(image[:, :, :3].astype(np.float32))

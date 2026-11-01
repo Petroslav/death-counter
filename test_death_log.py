@@ -9,6 +9,41 @@ from death_log import ScreenshotLog, before_frame, encode
 
 
 class LogTests(unittest.TestCase):
+    def test_paused_capture_does_not_grab_and_clears_history(self):
+        stop = threading.Event()
+        log = ScreenshotLog(stop, self.fail, enabled=lambda: False)
+        log.frames.append((1, 'old', b''))
+        log.latest = (1, 1, None)
+        with patch('death_log.mss.mss') as capture:
+            worker = threading.Thread(target=log.run)
+            worker.start()
+            stop.wait(0.05)
+            stop.set()
+            worker.join(1)
+            capture.return_value.__enter__.return_value.grab.assert_not_called()
+        self.assertEqual(len(log.frames),0)
+        self.assertIsNone(log.latest_frame())
+
+    def test_shared_frame_and_small_history(self):
+        stop = threading.Event()
+        image = np.zeros((1440,2560,4),dtype=np.uint8)
+        log = ScreenshotLog(stop, self.fail)
+        with patch('death_log.mss.mss') as capture, patch('death_log.encode', return_value=b'jpeg') as encoder:
+            mock = capture.return_value.__enter__.return_value
+            mock.monitors = [None, {}]
+            mock.grab.return_value = image
+            worker = threading.Thread(target=log.run)
+            worker.start()
+            for _ in range(30):
+                if log.latest_frame() is not None:
+                    break
+                stop.wait(0.01)
+            stop.set()
+            worker.join(1)
+            self.assertEqual(encoder.call_args[0][0].shape[:2],(900,1600))
+        self.assertEqual(log.latest_frame()[2].shape,(1440,2560,4))
+        self.assertEqual(log.frames[0][2],b'jpeg')
+
     def test_snapshot_scan_is_recent_first_and_bounded(self):
         log = ScreenshotLog(threading.Event(), lambda _: None)
         log.frames.extend((i/4, '', b'') for i in range(64))

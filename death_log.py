@@ -24,27 +24,49 @@ def encode(image):
 
 
 class ScreenshotLog:
-    def __init__(self, stop, on_error, monitor_index=lambda: 1):
+    def __init__(self, stop, on_error, monitor_index=lambda: 1, enabled=lambda: True):
         self.stop = stop
         self.on_error = on_error
         self.frames = deque(maxlen=64)
         self.lock = threading.Lock()
         self.monitor_index = monitor_index
+        self.enabled = enabled
+        self.latest = None
+
+    def clear(self):
+        with self.lock:
+            self.frames.clear()
+            self.latest = None
+
+    def latest_frame(self):
+        with self.lock:
+            return self.latest
 
     def run(self):
         try:
             with mss.mss() as capture:
                 while not self.stop.is_set():
+                    if not self.enabled():
+                        self.clear()
+                        self.stop.wait(0.2)
+                        continue
+                    started = time.monotonic()
                     index = self.monitor_index()
                     image = np.array(capture.grab(capture.monitors[index]))
                     stamp, wall = time.monotonic(), datetime.now().astimezone().isoformat(timespec='milliseconds')
-                    frame = (stamp, wall, encode(image))
+                    # One full-resolution frame is shared by OCR and detection.
+                    # The longer history uses smaller JPEGs to bound CPU and RAM.
+                    height, width = image.shape[:2]
+                    ratio = min(1.0, 1600 / width)
+                    preview = cv2.resize(image[:, :, :3], (round(width*ratio), round(height*ratio))) if ratio < 1 else image
+                    frame = (stamp, wall, encode(preview))
                     with self.lock:
-                        if index == self.monitor_index():
+                        if index == self.monitor_index() and self.enabled():
+                            self.latest = (index, stamp, image)
                             self.frames.append(frame)
                             while self.frames and stamp - self.frames[0][0] > 12:
                                 self.frames.popleft()
-                    self.stop.wait(0.25)
+                    self.stop.wait(max(0, 0.5 - (time.monotonic() - started)))
         except Exception as exc:
             self.on_error(f'Screenshot buffer unavailable: {exc}')
 
