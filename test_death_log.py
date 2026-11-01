@@ -52,10 +52,16 @@ class LogTests(unittest.TestCase):
         self.assertTrue(all(0 <= 15-frame[0] <= 10 for frame in selected))
         self.assertTrue(all(a[0] > b[0] for a,b in zip(selected,selected[1:])))
 
-    def test_only_frames_one_to_two_seconds_before(self):
+    def test_preferred_window_and_fallback_to_earlier_history(self):
         frames = [(7, 'old', b''), (8.1, 'early', b''), (8.5, 'target', b''), (9.8, 'late', b'')]
         self.assertEqual(before_frame(frames, 10)[1], 'target')
-        self.assertIsNone(before_frame([frames[0], frames[-1]], 10))
+        self.assertEqual(before_frame([frames[0], frames[-1]], 10)[1], 'old')
+        self.assertIsNone(before_frame([(11,'future',b''),(-1,'too old',b''),(10,'onset',b'')],10))
+
+    def test_one_fps_jitter_does_not_drop_both_neighbor_frames(self):
+        chosen=before_frame([(7.999,'older',b''),(9.001,'newer',b'')],10)
+        self.assertIsNotNone(chosen)
+        self.assertIn(chosen[1],('older','newer'))
 
     def test_evidence_files_and_timestamps(self):
         image = np.zeros((60, 80, 4), dtype=np.uint8)
@@ -81,6 +87,8 @@ class LogTests(unittest.TestCase):
             result = log.save(folder, 10)
             self.assertIsNone(result['before'])
             self.assertIsNotNone(result['death'])
+            self.assertEqual(result['buffer_info']['frame_count'],0)
+            self.assertIn('No buffered frame',result['before_unavailable_reason'])
 
 
 if __name__ == '__main__':

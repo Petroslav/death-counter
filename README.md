@@ -27,9 +27,11 @@ side by side inside the app. Select an entry or use **Previous** / **Next**;
 **Refresh log** loads new entries. A short selected-monitor screenshot buffer runs in memory at
 roughly one frame per second. Only counted deaths write screenshots to
 `death_logs/`: the closest available frame 1–2 seconds before detection (target
-1.5 seconds), and a fresh capture when the death is recorded. Timestamps include
-the local UTC offset and milliseconds. No before image is substituted if none
-exists in that interval. The log includes manual F8 deaths too; for those, timing
+1.5 seconds), and a fresh capture when the death is recorded. If timing jitter
+leaves no frame in the preferred interval, the nearest earlier frame between
+0.25 and 10 seconds old is saved instead, with its actual age shown in the log.
+Timestamps include the local UTC offset and milliseconds. Buffer age diagnostics
+and a missing-image reason are stored with new deaths. The log includes manual F8 deaths too; for those, timing
 is relative to the key press, so press while the death screen is visible.
 
 Captures cover the whole selected monitor, including any visible desktop windows.

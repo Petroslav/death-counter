@@ -457,7 +457,7 @@ class Counter:
                 picture.configure(image='', text='Screenshot unavailable')
                 photos.pop(kind, None)
                 if not shot:
-                    caption.configure(text=entry.get('screenshot_error', 'No saved screenshot for this death.'))
+                    caption.configure(text=entry.get('screenshot_error', entry.get('screenshots',{}).get('before_unavailable_reason', 'No saved screenshot for this death.')))
                     continue
                 caption.configure(text=shot['time'] + (f"  ({shot['seconds_before']:.2f}s before detection)" if 'seconds_before' in shot else ''))
                 try:

@@ -13,6 +13,10 @@ import mss
 
 def before_frame(frames, onset):
     eligible = [frame for frame in frames if 1 <= onset - frame[0] <= 2]
+    if not eligible:
+        # At 1 FPS, jitter can leave neighbors at 0.999s and 2.001s old.
+        # Never substitute the onset/future frame, or a frame older than history.
+        eligible = [frame for frame in frames if 0.25 <= onset - frame[0] <= 10]
     return min(eligible, key=lambda frame: abs(onset - frame[0] - 1.5), default=None)
 
 
@@ -78,14 +82,18 @@ class ScreenshotLog:
 
     def save(self, folder, onset):
         with self.lock:
-            before = before_frame(list(self.frames), onset)
+            frames = list(self.frames)
+            before = before_frame(frames, onset)
         folder = Path(folder) / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
         folder.mkdir(parents=True, exist_ok=False)
-        result = {'before': None, 'death': None}
+        ages = [round(onset-frame[0],4) for frame in frames]
+        result = {'before': None, 'death': None, 'buffer_info': {'frame_count':len(frames), 'frame_ages_seconds':ages}}
+        if before is None:
+            result['before_unavailable_reason'] = 'No buffered frame between 0.25 and 10 seconds before death (startup, pause, monitor change, or capture gap).'
         if before is not None:
             path = folder / 'before.jpg'
             path.write_bytes(encode(before[2]) if isinstance(before[2], np.ndarray) else before[2])
-            result['before'] = {'path': str(path.resolve()), 'time': before[1], 'seconds_before': round(onset - before[0], 3)}
+            result['before'] = {'path': str(path.resolve()), 'time': before[1], 'seconds_before': round(onset - before[0], 3), 'outside_preferred_window': not 1 <= onset-before[0] <= 2}
         with mss.mss() as capture:
             image = np.array(capture.grab(capture.monitors[self.monitor_index()]))
             wall = datetime.now().astimezone().isoformat(timespec='milliseconds')

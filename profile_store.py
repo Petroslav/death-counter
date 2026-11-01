@@ -69,6 +69,8 @@ class ProfileStore:
         with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as archive:
             for index, death in enumerate(data.get('deaths', [])):
                 for kind, shot in death.get('screenshots', {}).items():
+                    if kind not in ('before', 'death'):
+                        continue
                     if not shot:
                         continue
                     source = Path(shot['path'])
@@ -108,6 +110,8 @@ class ProfileStore:
             payloads = []
             for i, death in enumerate(data.get('deaths', [])):
                 for kind, shot in death.get('screenshots', {}).items():
+                    if kind not in ('before', 'death'):
+                        continue
                     if shot:
                         if kind not in ('before', 'death') or shot['path'] != f'images/{i}-{kind}.jpg':
                             raise ValueError('Invalid screenshot reference')

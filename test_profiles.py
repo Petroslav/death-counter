@@ -39,6 +39,8 @@ class ProfileTests(unittest.TestCase):
             ref = root/'ref.png'; ref.write_bytes(b'reference-data')
             data = {'deaths': [{'boss':'Boss', 'time':'2026-11-01T10:00:00+02:00', 'screenshots': {'before': {'path': str(image), 'time':'earlier'}, 'death':None}}], 'reference_path': str(ref), 'aliases': {'BOSS':'Boss'}, 'region': {'left':0,'top':0,'width':100,'height':50}}
             write_json(root/'counter.json', data)
+            data['deaths'][0]['screenshots']['buffer_info']={'frame_count':12}
+            write_json(root/'counter.json', data)
             store = ProfileStore(root)
             archive = root/'export.zip'
             self.assertEqual(store.export(archive),0)
