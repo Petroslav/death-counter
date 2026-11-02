@@ -17,6 +17,7 @@ from difflib import SequenceMatcher
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from profile_store import ProfileStore
 from death_edits import merge_categories, transfer_deaths
+import encounters as fights
 
 APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA_ROOT = Path(os.environ.get('DEATH_COUNTER_DATA', APP_ROOT / 'data' if getattr(sys, 'frozen', False) else APP_ROOT))
@@ -116,9 +117,16 @@ class Counter:
         self.last_press = 0
         self.aliases = {}
         self.reference_path = None
+        self.encounters = {}
         if DATA.exists():
             try:
                 saved = json.loads(DATA.read_text(encoding='utf-8'))
+                if 'encounters' not in saved:
+                    import shutil
+                    backup=DATA.with_name('counter.before-encounters.json')
+                    if not backup.exists():
+                        shutil.copy2(DATA,backup)
+                self.encounters = saved.get('encounters',{})
                 self.deaths = saved.get('deaths', [])
                 self.region = saved.get('region')
                 self.aliases = saved.get('aliases', {})
@@ -136,6 +144,7 @@ class Counter:
                 self.auto_enabled = saved.get('auto_enabled', True)
                 self.monitor_index = saved.get('monitor_index', 1)
                 self.reference_path = saved.get('reference_path')
+                fights.migrate(self.deaths,self.encounters)
             except (ValueError, OSError):
                 messagebox.showwarning('Saved data', 'Could not read counter.json. The original file will be preserved. Close the app and inspect it before continuing.')
                 root.destroy()
@@ -199,6 +208,10 @@ class Counter:
         self.correction.pack(side='left', fill='x', expand=True)
         ttk.Button(edit, text='Rename selected boss', command=self.rename).pack(side='left', padx=5)
         ttk.Button(root, text='Merge selected boss categories… (Ctrl-click to select several)', command=self.merge_selected).pack(pady=(0,8))
+        kill_actions=ttk.Frame(root)
+        kill_actions.pack(pady=(0,8))
+        ttk.Button(kill_actions,text='Mark selected fight killed',command=self.mark_selected_killed).pack(side='left',padx=5)
+        ttk.Button(kill_actions,text='Remove killed tag',command=self.remove_killed).pack(side='left')
         self.save()
         self.refresh()
         from death_log import ScreenshotLog
@@ -212,7 +225,7 @@ class Counter:
 
     def save(self):
         temp = DATA.with_suffix('.tmp')
-        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path}, indent=2), encoding='utf-8')
+        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters}, indent=2), encoding='utf-8')
         temp.replace(DATA)
 
     def toggle_pause(self):
@@ -345,13 +358,39 @@ class Counter:
 
     def refresh(self):
         self.total.set(f'{len(self.deaths)} deaths')
-        totals = {}
+        totals = {ident:0 for ident in self.encounters}
+        self.row_deaths = {ident:[] for ident in self.encounters}
         for death in self.deaths:
-            name = death['boss']
-            totals[name] = totals.get(name, 0) + 1
+            ident = death.get('encounter_id','environment')
+            totals[ident] = totals.get(ident, 0) + 1
+            self.row_deaths.setdefault(ident,[]).append(death)
         self.table.delete(*self.table.get_children())
-        for name, count in sorted(totals.items()):
-            self.table.insert('', 'end', values=(name, count))
+        for ident,count in totals.items():
+            name=fights.label(self.encounters[ident]) if ident in self.encounters else 'Enemy/environment death'
+            self.table.insert('', 'end', iid=ident, values=(name, count))
+
+    def mark_selected_killed(self):
+        selected=[ident for ident in self.table.selection() if ident in self.encounters]
+        if not selected:
+            self.status.set('Select a boss fight first.')
+            return
+        self.backup_before_edit()
+        when=datetime.now().astimezone().isoformat(timespec='milliseconds')
+        for ident in selected:
+            fights.mark_killed(self.encounters,ident,when)
+        self.save()
+        self.refresh()
+        self.status.set('Marked killed. Future deaths to this boss start a separate rematch.')
+
+    def remove_killed(self):
+        selected=[ident for ident in self.table.selection() if ident in self.encounters]
+        if selected:
+            self.backup_before_edit()
+            for ident in selected:
+                self.encounters[ident]['killed_at']=None
+            self.save()
+            self.refresh()
+            self.status.set('Killed tag removed. Existing rematches remain separate.')
 
     def count(self, stamp):
         if self.paused.is_set():
@@ -476,7 +515,7 @@ class Counter:
             for death in reversed(self.deaths):
                 shots = death.get('screenshots', {})
                 before, current = shots.get('before'), shots.get('death')
-                ident = table.insert('', 'end', values=(death['time'], death['boss'], before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable'))
+                ident = table.insert('', 'end', values=(death['time'], fights.death_label(death,self.encounters), before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable'))
                 entries[ident] = death
                 if id(death) in selected_deaths:
                     restored.append(ident)
@@ -501,14 +540,27 @@ class Counter:
             chosen = [entries[item] for item in table.selection() if item in entries]
             if not chosen:
                 return
-            target = self.pick_category(f'Move {len(chosen)} selected death(s)', chosen[0]['boss'], window)
+            target = self.pick_category(f'Move {len(chosen)} selected death(s)', fights.death_label(chosen[0],self.encounters), window)
             if target:
                 self.backup_before_edit()
-                transfer_deaths(self.deaths, chosen, target)
+                self.move_to_fight(chosen,target)
                 self.save()
                 self.refresh()
                 refresh_log()
                 self.status.set(f'Moved {len(chosen)} death(s) to {target}')
+        def killed_after_selected():
+            chosen=[entries[item] for item in table.selection() if item in entries]
+            if len(chosen)!=1 or chosen[0].get('encounter_id') not in self.encounters:
+                messagebox.showinfo('Select one boss death','Select the last death before you won the earlier fight.',parent=window)
+                return
+            if not messagebox.askyesno('Separate a rematch','Mark the fight killed after this death, and move its later deaths to a separate rematch?\n\nChoose the last death BEFORE the winning attempt.',parent=window):
+                return
+            self.backup_before_edit()
+            moved=fights.split_after(self.deaths,self.encounters,chosen[0])
+            self.save()
+            self.refresh()
+            refresh_log()
+            self.status.set(f'Fight marked killed; {moved} later deaths moved to a rematch.')
         table.bind('<<TreeviewSelect>>', display)
         actions = ttk.Frame(window)
         actions.pack(pady=(0, 10))
@@ -516,6 +568,7 @@ class Counter:
         ttk.Button(actions, text='Next', command=lambda: navigate(1)).pack(side='left', padx=5)
         ttk.Button(actions, text='Refresh log', command=refresh_log).pack(side='left', padx=5)
         ttk.Button(actions, text='Move selected death(s)…', command=move_selected).pack(side='left', padx=5)
+        ttk.Button(actions, text='Killed after this death…', command=killed_after_selected).pack(side='left', padx=5)
         ttk.Label(window, text='Ctrl-click or Shift-click rows to move multiple deaths. Screenshots and timestamps stay attached.').pack(pady=(0,8))
         window.after(100, refresh_log)
 
@@ -531,9 +584,16 @@ class Counter:
         new = self.correction.get().strip()
         if not selected or not new:
             return
-        old = self.table.item(selected[0], 'values')[0]
         self.backup_before_edit()
-        merge_categories(self.deaths, self.aliases, [old], new)
+        encounter=self.encounters.get(selected[0])
+        if encounter and encounter['boss'].casefold()==new.casefold():
+            encounter['boss']=new
+            for death in self.row_deaths.get(selected[0],[]):
+                death['boss']=new
+            self.save()
+            self.refresh()
+            return
+        self.move_to_fight(self.row_deaths.get(selected[0],[]),new,remember_alias=True,preserve_status=True)
         self.save()
         self.refresh()
 
@@ -550,7 +610,7 @@ class Counter:
         dialog.transient(parent or self.root)
         dialog.grab_set()
         ttk.Label(dialog,text='Choose an existing category or type a new name:').pack(padx=15,pady=10)
-        choices = sorted({death['boss'] for death in self.deaths} | {'Enemy/environment death'})
+        choices = sorted({fights.label(encounter) for encounter in self.encounters.values()} | {'Enemy/environment death'})
         target = ttk.Combobox(dialog,values=choices,width=55)
         target.set(initial)
         target.pack(padx=15,pady=5)
@@ -572,17 +632,54 @@ class Counter:
         return result[0] if result else None
 
     def merge_selected(self):
-        sources=[self.table.item(item,'values')[0] for item in self.table.selection()]
-        if not sources:
+        selected=list(self.table.selection())
+        if not selected:
             self.status.set('Select the boss categories to merge first (Ctrl-click for several).')
             return
-        target=self.pick_category('Merge selected categories',sources[0])
+        target=self.pick_category('Merge selected categories',self.table.item(selected[0],'values')[0])
         if target:
             self.backup_before_edit()
-            changed=merge_categories(self.deaths,self.aliases,sources,target)
+            chosen=[death for ident in selected for death in self.row_deaths.get(ident,[])]
+            changed=self.move_to_fight(chosen,target,remember_alias=True)
             self.save()
             self.refresh()
             self.status.set(f'Merged {changed} death(s) into {target}')
+
+    def move_to_fight(self, chosen, target, remember_alias=False, preserve_status=False):
+        labels={fights.label(encounter):ident for ident,encounter in self.encounters.items()}
+        ident=labels.get(target)
+        created=False
+        if ident:
+            boss=self.encounters[ident]['boss']
+        elif target.casefold()=='enemy/environment death':
+            boss='Enemy/environment death'
+        else:
+            boss=target.strip()
+            matching=[(key,e) for key,e in self.encounters.items() if e['boss'].casefold()==boss.casefold()]
+            if matching:
+                ident=max(matching,key=lambda pair:pair[1]['number'])[0]
+            else:
+                ident=fights.new_encounter(self.encounters,boss,min((d['time'] for d in chosen),default=datetime.now().astimezone().isoformat()))
+                created=True
+        previous={death['boss'] for death in chosen}
+        source_ids={death.get('encounter_id') for death in chosen}
+        if preserve_status and created and len(source_ids)==1:
+            source=self.encounters.get(next(iter(source_ids)))
+            if source:
+                self.encounters[ident]['killed_at']=source.get('killed_at')
+        changed=fights.assign_to(self.deaths,chosen,self.encounters,boss,ident)
+        for source in source_ids:
+            if source and source!=ident and not any(d.get('encounter_id')==source for d in self.deaths):
+                self.encounters.pop(source,None)
+        if remember_alias:
+            for source in previous:
+                # Correcting one encounter must not rename another rematch.
+                if source.casefold()!='enemy/environment death' and not any(e['boss'].casefold()==source.casefold() for e in self.encounters.values() if e['boss'].casefold()!=boss.casefold()):
+                    for key,value in list(self.aliases.items()):
+                        if value.casefold()==source.casefold():
+                            self.aliases[key]=boss
+                    self.aliases[source]=boss
+        return changed
 
     def toggle_auto(self):
         self.auto_enabled = self.auto_var.get()
@@ -720,6 +817,7 @@ class Counter:
                 death, boss = value
                 if any(entry is death for entry in self.deaths) and death['boss'] == 'Enemy/environment death' and not death.get('manual_assignment'):
                     death['boss'] = resolve_boss(boss, self.aliases, (entry['boss'] for entry in self.deaths))
+                    fights.route_death(death,self.encounters)
                     self.save()
                     self.refresh()
                     self.status.set(f"Recovered boss from recent snapshots: {death['boss']}")

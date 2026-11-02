@@ -54,6 +54,15 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
 
 ## Correcting deaths in the app
 
+- **Mark selected fight killed**: select a boss row after winning. The row gets
+  `[Killed]`, and future deaths to the same name start `Rematch 1`, `Rematch 2`,
+  etc. Marking a victory does not increase the death total. No automatic win-screen
+  detection is used; short win animations can be missed at 1 FPS.
+- **Remove killed tag** undoes the tag; it does not merge existing rematches.
+- **Killed after this death…** in the log fixes an older encounter boundary.
+  Select the final death before the earlier winning attempt; later deaths in
+  that fight move to a separate rematch. The exact win time is not reconstructed.
+
 - **Merge selected boss categories…**: Ctrl-click categories in the main table,
   click Merge, and choose an existing category or type the correct name. Their
   counts combine and spelling aliases are remembered for future readings.
@@ -63,10 +72,13 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
 - **Rename selected boss** still renames an entire category and merges into an
   existing name when applicable.
 
+Merge/transfer dropdowns list each encounter separately, including killed fights.
 All edits preserve timestamps and screenshot links, and create a JSON backup in
 the active profile's `backups/` directory. Manually assigned deaths are protected
 from later automatic OCR reassignment. OCR boxes are assembled left to right;
 known names with the same words in a different order reuse the same category.
+First startup with encounter support also creates `counter.before-encounters.json`.
+Profile export/import preserves encounter IDs and killed tags.
 
 Totals, death timestamps, aliases, and the capture region persist in `counter.json`.
 Undo removes the latest death across sessions. Back up that JSON to keep a copy.

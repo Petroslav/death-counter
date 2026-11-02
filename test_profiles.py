@@ -40,6 +40,8 @@ class ProfileTests(unittest.TestCase):
             data = {'deaths': [{'boss':'Boss', 'time':'2026-11-01T10:00:00+02:00', 'screenshots': {'before': {'path': str(image), 'time':'earlier'}, 'death':None}}], 'reference_path': str(ref), 'aliases': {'BOSS':'Boss'}, 'region': {'left':0,'top':0,'width':100,'height':50}}
             write_json(root/'counter.json', data)
             data['deaths'][0]['screenshots']['buffer_info']={'frame_count':12}
+            data['deaths'][0]['encounter_id']='fight-one'
+            data['encounters']={'fight-one':{'boss':'Boss','number':1,'started_at':'2026-11-01T10:00:00+02:00','killed_at':'2026-11-01T10:05:00+02:00'}}
             write_json(root/'counter.json', data)
             store = ProfileStore(root)
             archive = root/'export.zip'
@@ -47,6 +49,8 @@ class ProfileTests(unittest.TestCase):
             ident = store.import_archive(archive)
             imported = json.loads(store.data_path(ident).read_text())
             self.assertEqual(Path(imported['reference_path']).read_bytes(),b'reference-data')
+            self.assertEqual(imported['encounters'],data['encounters'])
+            self.assertEqual(imported['deaths'][0]['encounter_id'],'fight-one')
             self.assertEqual(Path(imported['deaths'][0]['screenshots']['before']['path']).read_bytes(),b'image-data')
             self.assertEqual(json.loads((root/'counter.json').read_text()),data)
             self.assertEqual(store.active,'legacy')
