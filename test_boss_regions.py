@@ -61,5 +61,21 @@ class RegionTests(unittest.TestCase):
         self.assertIsNone(counter.ocr_engine)
         self.assertEqual(counter.events.get_nowait()[1][1]['status'],'unconfirmed')
 
+    def test_primary_ocr_error_still_tries_fallback(self):
+        counter=self.worker([RuntimeError('primary failed'),self.result('Boss name'),self.result('Boss name')])
+        image=np.zeros((100,200,3),dtype=np.uint8)
+        counter.recover_boss({},10,[(9,'',image),(8,'',image)],{'left':0,'top':50,'width':100,'height':30},{'left':0,'top':0,'width':200,'height':100})
+        counter.events.get_nowait()
+        details=counter.events.get_nowait()[1][1]
+        self.assertEqual(details['status'],'confirmed')
+        self.assertEqual(details['source'],'saved fallback')
+
+    def test_one_frame_read_in_two_regions_is_not_two_confirmations(self):
+        counter=self.worker([self.result('Boss name'),self.result('Boss name')])
+        image=np.zeros((100,200,3),dtype=np.uint8)
+        counter.recover_boss({},10,[(9,'',image)],{'left':0,'top':50,'width':100,'height':30},{'left':0,'top':0,'width':200,'height':100})
+        details=counter.events.get_nowait()[1][1]
+        self.assertEqual(details['status'],'unconfirmed')
+
 
 if __name__=='__main__':unittest.main()
