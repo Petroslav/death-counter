@@ -11,6 +11,18 @@ Otherwise the death goes to **Enemy/environment death**.
 
 ## Automatic death detection
 
+Boss-name lookup first checks a resolution-independent region: the middle 50% of
+screen width, between 10% and 16% down from the top. If it cannot confirm a name
+in two snapshots, it retries the same history using your saved pixel region.
+Your selected area is preserved as that fallback. The general-area checkbox can
+be disabled to use only your saved region. This setting travels with each profile.
+
+The main window and death log show **confirmed in general area**, **confirmed in
+saved fallback**, or **UNCONFIRMED**. Select a log entry to see why confirmation
+failed and the text candidates OCR read. A failed lookup stays under environment
+until you correct it manually; it does not imply the death was actually environmental.
+Older entries without lookup diagnostics are labeled "Not recorded".
+
 The app searches the whole selected monitor using the supplied built-in death-symbol
 reference, at multiple positions and sizes. No death-screen calibration is needed.
 Enable **Automatically count deaths** to start. Extra black margins are fine.
@@ -47,8 +59,8 @@ launch installs dependencies into `.venv`; OCR may download its model files.
 Boss OCR captures are processed in memory; death-log screenshots are saved locally.
 
 1. Use borderless/windowed gameplay and choose the game display from the dropdown.
-2. Click **Select boss-name screen area** and select the area where boss names
-   appear. The boss need not be active; avoid unrelated interface text.
+2. The general boss area works without selection. Optionally select a saved
+   fallback area where boss names appear. The boss need not be active; avoid unrelated text.
 3. Return to the game. Automatic detection counts deaths; F8 covers missed deaths.
 4. Select a category and enter the correct name to merge/rename OCR mistakes.
 

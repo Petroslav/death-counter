@@ -18,6 +18,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from profile_store import ProfileStore
 from death_edits import merge_categories, transfer_deaths
 import encounters as fights
+from boss_regions import general_region, crop_region, lookup_description
 
 APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA_ROOT = Path(os.environ.get('DEATH_COUNTER_DATA', APP_ROOT / 'data' if getattr(sys, 'frozen', False) else APP_ROOT))
@@ -118,6 +119,7 @@ class Counter:
         self.aliases = {}
         self.reference_path = None
         self.encounters = {}
+        self.use_general_region = True
         if DATA.exists():
             try:
                 saved = json.loads(DATA.read_text(encoding='utf-8'))
@@ -128,6 +130,9 @@ class Counter:
                         shutil.copy2(DATA,backup)
                 self.encounters = saved.get('encounters',{})
                 self.deaths = saved.get('deaths', [])
+                for death in self.deaths:
+                    if death.get('boss_lookup',{}).get('status')=='pending':
+                        death['boss_lookup']={'status':'unconfirmed','reason':'previous lookup was interrupted by closing or restarting the app'}
                 self.region = saved.get('region')
                 self.aliases = saved.get('aliases', {})
                 known = []
@@ -144,6 +149,7 @@ class Counter:
                 self.auto_enabled = saved.get('auto_enabled', True)
                 self.monitor_index = saved.get('monitor_index', 1)
                 self.reference_path = saved.get('reference_path')
+                self.use_general_region = saved.get('use_general_region',True)
                 fights.migrate(self.deaths,self.encounters)
             except (ValueError, OSError):
                 messagebox.showwarning('Saved data', 'Could not read counter.json. The original file will be preserved. Close the app and inspect it before continuing.')
@@ -179,10 +185,12 @@ class Counter:
         self.monitor_choice.current(self.monitor_index - 1)
         self.monitor_choice.pack(pady=5)
         self.monitor_choice.bind('<<ComboboxSelected>>', self.change_monitor)
-        ttk.Button(root, text='Select boss-name screen area', command=self.select_region).pack(pady=10)
+        ttk.Button(root, text='Select saved boss-name area (fallback)', command=self.select_region).pack(pady=5)
+        self.general_region_var=tk.BooleanVar(value=self.use_general_region)
+        ttk.Checkbutton(root,text='Check general boss area first; use saved area as fallback',variable=self.general_region_var,command=self.toggle_general_region).pack()
         self.region_status = tk.StringVar(value=self.region_description())
         ttk.Label(root, textvariable=self.region_status, wraplength=510).pack()
-        self.ocr_status = tk.StringVar(value='Boss reader idle — runs only after a counted death')
+        self.ocr_status = tk.StringVar(value=lookup_description(self.deaths[-1].get('boss_lookup')) if self.deaths and self.deaths[-1].get('boss_lookup') else 'Boss reader idle — runs only after a counted death')
         ttk.Label(root, textvariable=self.ocr_status, wraplength=510).pack()
         self.auto_var = tk.BooleanVar(value=self.auto_enabled)
         ttk.Checkbutton(root, text='Automatically count deaths', variable=self.auto_var, command=self.toggle_auto).pack(pady=5)
@@ -225,7 +233,7 @@ class Counter:
 
     def save(self):
         temp = DATA.with_suffix('.tmp')
-        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters}, indent=2), encoding='utf-8')
+        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters, 'use_general_region':self.use_general_region}, indent=2), encoding='utf-8')
         temp.replace(DATA)
 
     def toggle_pause(self):
@@ -289,10 +297,16 @@ class Counter:
                 messagebox.showerror('Reference not saved', str(exc))
 
     def region_description(self):
+        primary='General area: x 25–75%, y 10–16%. ' if self.use_general_region else 'General area disabled. '
         if not self.region:
-            return 'Boss area: not selected'
+            return primary+'No saved fallback area.'
         r = self.region
-        return f"Boss area saved: x={r['left']}, y={r['top']}, {r['width']} × {r['height']} pixels"
+        return primary+f"Saved area: x={r['left']}, y={r['top']}, {r['width']} × {r['height']} pixels"
+
+    def toggle_general_region(self):
+        self.use_general_region=self.general_region_var.get()
+        self.region_status.set(self.region_description())
+        self.save()
 
     def change_monitor(self, _=None):
         previous = self.monitors[self.monitor_index - 1]
@@ -400,7 +414,7 @@ class Counter:
         self.last_press = stamp
         boss = 'Enemy/environment death'
         event_time = datetime.now().astimezone() - timedelta(seconds=max(0, time.monotonic() - stamp))
-        death = {'boss': boss, 'time': event_time.isoformat(timespec='milliseconds')}
+        death = {'boss': boss, 'time': event_time.isoformat(timespec='milliseconds'), 'boss_lookup':{'status':'pending'}}
         error = None
         try:
             death['screenshots'] = self.screenshots.save(DATA.parent / 'death_logs', stamp)
@@ -411,10 +425,10 @@ class Counter:
         self.save()
         self.refresh()
         self.status.set(f'Counted death for {boss}' + (f'; screenshot error: {error}' if error else ''))
-        if boss == 'Enemy/environment death' and self.region:
+        if boss == 'Enemy/environment death':
             self.ocr_status.set('Death counted — searching the previous 10 seconds for a boss name…')
             frames = self.screenshots.recent_frames(stamp)
-            region = dict(self.region)
+            region = dict(self.region) if self.region else None
             monitor = dict(self.monitors[self.monitor_index - 1])
             threading.Thread(target=self.recover_boss, args=(death, stamp, frames, region, monitor), daemon=True).start()
 
@@ -422,7 +436,17 @@ class Counter:
         """Inspect snapshots newest first, without blocking the UI or death detector."""
         import cv2
         import numpy as np
-        readings = []
+        observations=[]
+        sources=[]
+        if getattr(self,'use_general_region',True):
+            sources.append(('general area',general_region(monitor)))
+        if region and all(candidate!=region for _,candidate in sources):
+            sources.append(('saved fallback' if sources else 'saved area',region))
+        def report(details):
+            self.events.put(('lookup_details',(death,dict(details,observations=observations))))
+        if not frames or not sources:
+            report({'status':'unconfirmed','reason':'no buffered snapshots available' if not frames else 'no enabled boss region; enable general area or select a saved area'})
+            return
         try:
             # No model loading or OCR inference during normal gameplay.
             with self.ocr_lock:
@@ -433,30 +457,39 @@ class Counter:
                             return 'The text detection result is empty' not in record.getMessage()
                     logging.getLogger('RapidOCR').addFilter(EmptyTextFilter())
                     self.ocr_engine = RapidOCR(params={'EngineConfig.onnxruntime.intra_op_num_threads': 1, 'EngineConfig.onnxruntime.inter_op_num_threads': 1})
-            for stamp, _, encoded in frames:
-                if self.stop.is_set() or self.paused.is_set():
-                    return
-                image = encoded if isinstance(encoded, np.ndarray) else cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
-                scale_x, scale_y = image.shape[1]/monitor['width'], image.shape[0]/monitor['height']
-                x, y = round((region['left']-monitor['left'])*scale_x), round((region['top']-monitor['top'])*scale_y)
-                crop = image[max(0,y):max(0,y)+round(region['height']*scale_y), max(0,x):max(0,x)+round(region['width']*scale_x)]
-                if not crop.size:
-                    continue
-                with self.ocr_lock:
-                    if self.ocr_engine is None:
+            decoded=[(stamp, encoded if isinstance(encoded,np.ndarray) else cv2.imdecode(np.frombuffer(encoded,dtype=np.uint8),cv2.IMREAD_COLOR)) for stamp,_,encoded in frames]
+            for source,area in sources:
+                readings=[]
+                for stamp,image in decoded:
+                    if self.stop.is_set() or self.paused.is_set():
+                        report({'status':'unconfirmed','reason':'lookup interrupted by pause or restart'})
                         return
-                    result = self.ocr_engine(prepare_boss_image(crop))
-                name = boss_text(result)
-                if len(name) >= 3 and any(c.isalpha() for c in name):
-                    name = resolve_boss(name, dict(self.aliases), [entry['boss'] for entry in list(self.deaths)])
-                    readings.append((stamp, name))
-                boss = choose_boss(readings, onset)
-                if boss != 'Enemy/environment death':
-                    self.events.put(('recovered_boss', (death, boss)))
-                    return
-            self.events.put(('ocr_status', 'No confirmed boss name in previous 10 seconds — reader idle'))
+                    if image is None:
+                        continue
+                    crop=crop_region(image,area,monitor)
+                    if not crop.size:
+                        continue
+                    try:
+                        with self.ocr_lock:
+                            result=self.ocr_engine(prepare_boss_image(crop))
+                    except Exception as exc:
+                        observations.append({'source':source,'text':'','error':str(exc)})
+                        break
+                    raw=boss_text(result)
+                    observations.append({'source':source,'seconds_before':round(onset-stamp,3),'text':raw})
+                    if len(raw)>=3 and any(c.isalpha() for c in raw):
+                        name=resolve_boss(raw,dict(self.aliases),[entry['boss'] for entry in list(self.deaths)])
+                        readings.append((stamp,name))
+                    boss=choose_boss(readings,onset)
+                    if boss!='Enemy/environment death':
+                        self.events.put(('recovered_boss',(death,boss)))
+                        report({'status':'confirmed','source':source,'boss':boss})
+                        return
+            errors=[item['error'] for item in observations if 'error' in item]
+            reason='text was read, but no name agreed across two snapshots' if any(item['text'] for item in observations) else ('OCR error: '+errors[-1] if errors else 'no readable text found in the checked regions')
+            report({'status':'unconfirmed','reason':reason})
         except Exception as exc:
-            self.events.put(('status', f'Death saved; snapshot boss lookup failed: {exc}'))
+            report({'status':'unconfirmed','reason':f'OCR error: {exc}'})
 
     def show_log(self):
         from PIL import Image, ImageTk
@@ -465,14 +498,16 @@ class Counter:
         window.geometry('1100x760')
         table_frame = ttk.Frame(window)
         table_frame.pack(fill='x', padx=10, pady=10)
-        table = ttk.Treeview(table_frame, columns=('time', 'boss', 'before', 'death'), show='headings', height=7)
-        for column, title in [('time', 'Death timestamp'), ('boss', 'Boss / category'), ('before', 'Before capture timestamp'), ('death', 'Death-screen capture timestamp')]:
+        table = ttk.Treeview(table_frame, columns=('time', 'boss', 'before', 'death','lookup'), show='headings', height=7)
+        for column, title in [('time', 'Death timestamp'), ('boss', 'Boss / category'), ('before', 'Before capture timestamp'), ('death', 'Death-screen capture timestamp'),('lookup','Boss lookup')]:
             table.heading(column, text=title)
             table.column(column, width=240)
         table.pack(side='left', fill='x', expand=True)
         scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=table.yview)
         scrollbar.pack(side='right', fill='y')
         table.configure(yscrollcommand=scrollbar.set)
+        lookup_detail=ttk.Label(window,text='Select a death to inspect boss lookup results',wraplength=1050)
+        lookup_detail.pack(fill='x',padx=12,pady=4)
         previews = ttk.Frame(window)
         previews.pack(fill='both', expand=True, padx=10)
         panels = {}
@@ -491,6 +526,9 @@ class Counter:
             if not selection:
                 return
             entry = entries[selection[0]]
+            details=entry.get('boss_lookup')
+            texts=list(dict.fromkeys(item['text'] for item in (details or {}).get('observations',[]) if item.get('text')))
+            lookup_detail.configure(text=lookup_description(details)+(' | Read: '+' / '.join(texts[:6]) if texts else ''))
             for kind, (caption, picture) in panels.items():
                 shot = entry.get('screenshots', {}).get(kind)
                 picture.configure(image='', text='Screenshot unavailable')
@@ -515,7 +553,11 @@ class Counter:
             for death in reversed(self.deaths):
                 shots = death.get('screenshots', {})
                 before, current = shots.get('before'), shots.get('death')
-                ident = table.insert('', 'end', values=(death['time'], fights.death_label(death,self.encounters), before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable'))
+                details=death.get('boss_lookup',{})
+                lookup_state=details.get('status','Not recorded')
+                if lookup_state=='confirmed':
+                    lookup_state+=': '+details.get('source','')
+                ident = table.insert('', 'end', values=(death['time'], fights.death_label(death,self.encounters), before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable',lookup_state))
                 entries[ident] = death
                 if id(death) in selected_deaths:
                     restored.append(ident)
@@ -824,6 +866,12 @@ class Counter:
                     self.ocr_status.set(f"Last death boss: {death['boss']} — reader idle")
             elif kind == 'death_status':
                 self.death_status.set(value)
+            elif kind == 'lookup_details':
+                death,details=value
+                if any(entry is death for entry in self.deaths):
+                    death['boss_lookup']=details
+                    self.save()
+                    self.ocr_status.set(lookup_description(details))
             elif kind == 'ocr_status':
                 self.ocr_status.set(value)
             else:
