@@ -36,6 +36,9 @@ Actual gameplay accuracy still needs validation.
 
 Click **Death log / screenshots** to browse deaths and view both timestamped images
 side by side inside the app. Select an entry or use **Previous** / **Next**;
+double-click a boss row in the main table to open only that encounter's deaths.
+Rematches are filtered separately, even when they share the same boss name.
+The normal **Death log / screenshots** button still shows every encounter.
 **Refresh log** loads new entries. A short selected-monitor screenshot buffer runs in memory at
 roughly one frame per second. Only counted deaths write screenshots to
 `death_logs/`: the closest available frame 1–2 seconds before detection (target

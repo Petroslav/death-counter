@@ -223,6 +223,7 @@ class Counter:
         self.table.column('count', width=80, anchor='center')
         self.table.column('timestamp',width=150)
         self.table.pack(fill='both', expand=True, padx=12, pady=12)
+        self.table.bind('<Double-1>',self.open_boss_log)
         edit = ttk.Frame(root)
         edit.pack(fill='x', padx=12, pady=(0, 12))
         self.correction = ttk.Entry(edit)
@@ -520,11 +521,21 @@ class Counter:
         except Exception as exc:
             report({'status':'unconfirmed','reason':f'OCR error: {exc}'})
 
-    def show_log(self):
+    def open_boss_log(self,event):
+        ident=self.table.identify_row(event.y)
+        if ident:
+            self.table.selection_set(ident)
+            self.show_log(encounter_id=ident)
+            return 'break'
+
+    def show_log(self,encounter_id=None):
         from PIL import Image, ImageTk
         window = tk.Toplevel(self.root)
-        window.title('Death log — screenshot viewer')
+        filtered_name=fights.label(self.encounters[encounter_id]) if encounter_id in self.encounters else 'Enemy/environment death'
+        window.title('Death log — '+filtered_name if encounter_id is not None else 'Death log — all fights')
         window.geometry('1100x760')
+        scope=tk.StringVar(value='')
+        ttk.Label(window,textvariable=scope).pack(fill='x',padx=12,pady=(8,0))
         table_frame = ttk.Frame(window)
         table_frame.pack(fill='x', padx=10, pady=10)
         table = ttk.Treeview(table_frame, columns=('time', 'boss', 'before', 'death','lookup'), show='headings', height=7)
@@ -580,6 +591,8 @@ class Counter:
             entries.clear()
             restored = []
             for death in reversed(self.deaths):
+                if encounter_id is not None and death.get('encounter_id','environment')!=encounter_id:
+                    continue
                 shots = death.get('screenshots', {})
                 before, current = shots.get('before'), shots.get('death')
                 details=death.get('boss_lookup',{})
@@ -590,14 +603,17 @@ class Counter:
                 entries[ident] = death
                 if id(death) in selected_deaths:
                     restored.append(ident)
+            name=fights.label(self.encounters[encounter_id]) if encounter_id in self.encounters else filtered_name
+            scope.set(f'Only this fight: {name} — {len(entries)} death(s)' if encounter_id is not None else f'All fights — {len(entries)} death(s)')
             if entries:
                 table.selection_set(restored or [next(iter(entries))])
                 display()
             else:
                 for caption, picture in panels.values():
-                    caption.configure(text='No deaths logged yet')
+                    caption.configure(text='No deaths in this fight' if encounter_id is not None else 'No deaths logged yet')
                     picture.configure(image='', text='')
                 photos.clear()
+                lookup_detail.configure(text='No death selected')
         def navigate(direction):
             items = list(table.get_children())
             if not items:
@@ -642,6 +658,7 @@ class Counter:
         ttk.Button(actions, text='Killed after this death…', command=killed_after_selected).pack(side='left', padx=5)
         ttk.Label(window, text='Ctrl-click or Shift-click rows to move multiple deaths. Screenshots and timestamps stay attached.').pack(pady=(0,8))
         window.after(100, refresh_log)
+        return window
 
     def undo(self):
         if self.deaths:
