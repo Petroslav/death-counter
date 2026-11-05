@@ -58,6 +58,33 @@ def death_label(death, encounters):
     return label(encounter) if encounter else death['boss']
 
 
+def fight_timestamp(encounter, deaths, mode):
+    if mode=='killed':
+        return encounter.get('killed_at')
+    times=[death['time'] for death in deaths if death.get('time')]
+    if not times:
+        return encounter.get('started_at')
+    def value(text):
+        try:
+            return moment(text).timestamp()
+        except (ValueError,TypeError):
+            return float('-inf')
+    return (max if mode=='latest' else min)(times,key=value)
+
+
+def ordered_fights(encounters, rows, mode='first'):
+    def order(ident):
+        if ident not in encounters:
+            return (2,0,ident)  # Environment is a summary, not a boss encounter.
+        text=fight_timestamp(encounters[ident],rows[ident],mode)
+        try:
+            stamp=moment(text).timestamp()
+        except (ValueError,TypeError):
+            return (1,0,ident)
+        return (0,-stamp if mode=='latest' else stamp,ident)
+    return sorted(rows,key=order)
+
+
 def mark_killed(encounters, ident, when):
     encounter=encounters[ident]
     if not encounter.get('killed_at'):

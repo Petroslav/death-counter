@@ -66,6 +66,13 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
 
 ## Correcting deaths in the app
 
+The **Boss order** dropdown sorts encounters by **First death — oldest first**
+(the default), **Latest death — newest first**, or **Kill time — oldest first**.
+The matching timestamp appears in the table. Kill order puts unkilled fights
+after completed fights; the environment summary stays last. The sort choice is
+saved per profile and included in exports. Sorting never combines rematches or
+changes death timestamps. Retroactive kill markers use the boundary you selected.
+
 - **Mark selected fight killed**: select a boss row after winning. The row gets
   `[Killed]`, and future deaths to the same name start `Rematch 1`, `Rematch 2`,
   etc. Marking a victory does not increase the death total. No automatic win-screen

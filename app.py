@@ -120,6 +120,7 @@ class Counter:
         self.reference_path = None
         self.encounters = {}
         self.use_general_region = True
+        self.boss_sort = 'first'
         if DATA.exists():
             try:
                 saved = json.loads(DATA.read_text(encoding='utf-8'))
@@ -150,6 +151,9 @@ class Counter:
                 self.monitor_index = saved.get('monitor_index', 1)
                 self.reference_path = saved.get('reference_path')
                 self.use_general_region = saved.get('use_general_region',True)
+                self.boss_sort = saved.get('boss_sort','first')
+                if self.boss_sort not in ('first','latest','killed'):
+                    self.boss_sort='first'
                 fights.migrate(self.deaths,self.encounters)
             except (ValueError, OSError):
                 messagebox.showwarning('Saved data', 'Could not read counter.json. The original file will be preserved. Close the app and inspect it before continuing.')
@@ -204,11 +208,20 @@ class Counter:
         ttk.Button(buttons, text='Undo', command=self.undo).pack(side='left')
         ttk.Button(buttons, text='Death log / screenshots', command=self.show_log).pack(side='left', padx=5)
         ttk.Button(buttons, text='Detection check', command=self.show_diagnostic).pack(side='left')
-        self.table = ttk.Treeview(root, columns=('boss', 'count'), show='headings', height=9)
+        sorting=ttk.Frame(root)
+        sorting.pack(fill='x',padx=12,pady=4)
+        ttk.Label(sorting,text='Boss order:').pack(side='left',padx=(0,6))
+        self.sort_options={'First death — oldest first':'first','Latest death — newest first':'latest','Kill time — oldest first':'killed'}
+        self.sort_choice=ttk.Combobox(sorting,state='readonly',values=list(self.sort_options),width=32)
+        self.sort_choice.set(next(text for text,mode in self.sort_options.items() if mode==self.boss_sort))
+        self.sort_choice.pack(side='left')
+        self.sort_choice.bind('<<ComboboxSelected>>',self.change_boss_order)
+        self.table = ttk.Treeview(root, columns=('boss', 'count','timestamp'), show='headings', height=9)
         self.table.heading('boss', text='Boss / category')
         self.table.heading('count', text='Deaths')
         self.table.column('boss', width=360)
         self.table.column('count', width=80, anchor='center')
+        self.table.column('timestamp',width=150)
         self.table.pack(fill='both', expand=True, padx=12, pady=12)
         edit = ttk.Frame(root)
         edit.pack(fill='x', padx=12, pady=(0, 12))
@@ -233,7 +246,7 @@ class Counter:
 
     def save(self):
         temp = DATA.with_suffix('.tmp')
-        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters, 'use_general_region':self.use_general_region}, indent=2), encoding='utf-8')
+        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters, 'use_general_region':self.use_general_region, 'boss_sort':self.boss_sort}, indent=2), encoding='utf-8')
         temp.replace(DATA)
 
     def toggle_pause(self):
@@ -371,6 +384,7 @@ class Counter:
             messagebox.showerror('Detection check', str(exc))
 
     def refresh(self):
+        selected=set(self.table.selection())
         self.total.set(f'{len(self.deaths)} deaths')
         totals = {ident:0 for ident in self.encounters}
         self.row_deaths = {ident:[] for ident in self.encounters}
@@ -379,9 +393,24 @@ class Counter:
             totals[ident] = totals.get(ident, 0) + 1
             self.row_deaths.setdefault(ident,[]).append(death)
         self.table.delete(*self.table.get_children())
-        for ident,count in totals.items():
+        self.table.heading('timestamp',text={'first':'First death','latest':'Latest death','killed':'Killed at'}[self.boss_sort])
+        for ident in fights.ordered_fights(self.encounters,self.row_deaths,self.boss_sort):
+            count=totals[ident]
             name=fights.label(self.encounters[ident]) if ident in self.encounters else 'Enemy/environment death'
-            self.table.insert('', 'end', iid=ident, values=(name, count))
+            stamp=fights.fight_timestamp(self.encounters.get(ident,{}),self.row_deaths[ident],self.boss_sort)
+            try:
+                stamp=fights.moment(stamp).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+            except (ValueError,TypeError):
+                stamp='—'
+            self.table.insert('', 'end', iid=ident, values=(name, count,stamp))
+        remaining=selected.intersection(self.table.get_children())
+        if remaining:
+            self.table.selection_set(list(remaining))
+
+    def change_boss_order(self,_=None):
+        self.boss_sort=self.sort_options[self.sort_choice.get()]
+        self.save()
+        self.refresh()
 
     def mark_selected_killed(self):
         selected=[ident for ident in self.table.selection() if ident in self.encounters]
