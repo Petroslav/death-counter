@@ -10,10 +10,12 @@ def moment(text):
     return value.astimezone() if value.tzinfo is None else value
 
 
-def new_encounter(encounters, boss, started_at):
-    number = 1 + max((e['number'] for e in encounters.values() if e['boss'].casefold()==boss.casefold()), default=0)
+def new_encounter(encounters, boss, started_at, run_id=None):
+    number = 1 + max((e['number'] for e in encounters.values() if e['boss'].casefold()==boss.casefold() and e.get('run_id')==run_id), default=0)
     ident = uuid.uuid4().hex
     encounters[ident] = {'boss':boss, 'number':number, 'started_at':started_at, 'killed_at':None}
+    if run_id is not None:
+        encounters[ident]['run_id']=run_id
     return ident
 
 
@@ -22,14 +24,14 @@ def route_death(death, encounters):
     if boss.casefold()==ENVIRONMENT.casefold():
         death.pop('encounter_id',None)
         return None
-    matches = [(ident,e) for ident,e in encounters.items() if e['boss'].casefold()==boss.casefold()]
+    matches = [(ident,e) for ident,e in encounters.items() if e['boss'].casefold()==boss.casefold() and e.get('run_id')==death.get('run_id')]
     # An OCR result completed after Mark killed can still belong to the old fight.
     closed = [(ident,e) for ident,e in matches if e.get('killed_at') and moment(death['time']) <= moment(e['killed_at'])]
     if closed:
         ident = min(closed,key=lambda pair:pair[1]['number'])[0]
     else:
         opened = [(ident,e) for ident,e in matches if not e.get('killed_at')]
-        ident = max(opened,key=lambda pair:pair[1]['number'])[0] if opened else new_encounter(encounters,boss,death['time'])
+        ident = max(opened,key=lambda pair:pair[1]['number'])[0] if opened else new_encounter(encounters,boss,death['time'],death.get('run_id'))
     death['encounter_id']=ident
     return ident
 
@@ -93,6 +95,8 @@ def mark_killed(encounters, ident, when):
 
 def assign_to(deaths, selected, encounters, boss, ident=None):
     selected_ids={id(death) for death in selected}
+    if ident and any(encounters[ident].get('run_id')!=death.get('run_id') for death in deaths if id(death) in selected_ids):
+        raise ValueError('Deaths cannot be moved between NG cycles')
     changed=0
     for death in deaths:
         if id(death) in selected_ids:
@@ -115,6 +119,6 @@ def split_after(deaths, encounters, last_death):
     encounter['killed_at']=cutoff
     later=[death for death in deaths if death.get('encounter_id')==ident and moment(death['time'])>moment(cutoff)]
     if later:
-        new_id=new_encounter(encounters,encounter['boss'],min(d['time'] for d in later))
+        new_id=new_encounter(encounters,encounter['boss'],min(d['time'] for d in later),encounter.get('run_id'))
         assign_to(deaths,later,encounters,encounter['boss'],new_id)
     return len(later)

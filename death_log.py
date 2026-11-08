@@ -36,9 +36,11 @@ class ScreenshotLog:
         self.monitor_index = monitor_index
         self.enabled = enabled
         self.latest = None
+        self.generation=0
 
     def clear(self):
         with self.lock:
+            self.generation+=1
             self.frames.clear()
             self.latest = None
 
@@ -55,6 +57,8 @@ class ScreenshotLog:
                         self.stop.wait(0.2)
                         continue
                     started = time.monotonic()
+                    with self.lock:
+                        generation=self.generation
                     index = self.monitor_index()
                     image = np.array(capture.grab(capture.monitors[index]))
                     stamp, wall = time.monotonic(), datetime.now().astimezone().isoformat(timespec='milliseconds')
@@ -62,7 +66,7 @@ class ScreenshotLog:
                     # Full-resolution pixels retain fine lettering for post-death OCR.
                     frame = (stamp, wall, image[:, :, :3].copy())
                     with self.lock:
-                        if index == self.monitor_index() and self.enabled():
+                        if index == self.monitor_index() and self.enabled() and generation==self.generation:
                             self.latest = (index, stamp, image)
                             self.frames.append(frame)
                             while self.frames and stamp - self.frames[0][0] > 12:

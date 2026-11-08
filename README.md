@@ -69,6 +69,26 @@ Boss OCR captures are processed in memory; death-log screenshots are saved local
 
 ## Correcting deaths in the app
 
+## NG / playthrough stats
+
+Click **New NG** to begin a fresh list: **NG**, **NG+**, **NG+2**, and so on.
+The **Stats** dropdown shows an individual playthrough or **Overall**. Overall
+shows every encounter with its NG label and the combined death total; same-named
+bosses in different NGs remain separate. The log follows the selected stats view.
+
+Viewing older stats does not change recording. The **Recording new deaths in**
+label always identifies the active NG. **Record in selected NG** resumes an older
+playthrough if needed. Undo only removes the latest death in the recording NG.
+Capture settings and OCR spelling aliases are shared within the game profile;
+death history, rematches and killed tags are separate per NG. Cross-NG merges
+and transfers are blocked. A new NG clears old buffered frames; pending OCR
+results still belong to their original playthrough.
+
+Existing data is preserved as **NG**, with `counter.before-ng.json` saved before
+migration. Export/import includes all playthroughs, screenshots and selected views.
+
+## Editing boss encounters
+
 The **Boss order** dropdown sorts encounters by **First death — oldest first**
 (the default), **Latest death — newest first**, or **Kill time — oldest first**.
 The matching timestamp appears in the table. Kill order puts unkilled fights

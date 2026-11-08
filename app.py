@@ -18,6 +18,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from profile_store import ProfileStore
 from death_edits import merge_categories, transfer_deaths
 import encounters as fights
+import playthroughs as ng
 from boss_regions import general_region, crop_region, lookup_description
 
 APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
@@ -121,9 +122,20 @@ class Counter:
         self.encounters = {}
         self.use_general_region = True
         self.boss_sort = 'first'
+        self.playthroughs={ng.BASE:{'name':'NG'}}
+        self.active_run=ng.BASE
+        self.stats_run=ng.BASE
         if DATA.exists():
             try:
                 saved = json.loads(DATA.read_text(encoding='utf-8'))
+                if 'playthroughs' not in saved:
+                    import shutil
+                    backup=DATA.with_name('counter.before-ng.json')
+                    if not backup.exists():
+                        shutil.copy2(DATA,backup)
+                self.playthroughs=saved.get('playthroughs',{})
+                self.active_run=saved.get('active_run',ng.BASE)
+                self.stats_run=saved.get('stats_run',self.active_run)
                 if 'encounters' not in saved:
                     import shutil
                     backup=DATA.with_name('counter.before-encounters.json')
@@ -154,13 +166,18 @@ class Counter:
                 self.boss_sort = saved.get('boss_sort','first')
                 if self.boss_sort not in ('first','latest','killed'):
                     self.boss_sort='first'
+                ng.migrate(self.deaths,self.encounters,self.playthroughs)
                 fights.migrate(self.deaths,self.encounters)
+                if self.active_run not in self.playthroughs:
+                    self.active_run=next(iter(self.playthroughs))
+                if self.stats_run not in self.playthroughs and self.stats_run!=ng.ALL:
+                    self.stats_run=self.active_run
             except (ValueError, OSError):
                 messagebox.showwarning('Saved data', 'Could not read counter.json. The original file will be preserved. Close the app and inspect it before continuing.')
                 root.destroy()
                 raise SystemExit(1)
         root.title('Death Counter')
-        root.geometry('640x850')
+        root.geometry('640x930')
         self.total = tk.StringVar()
         self.status = tk.StringVar(value='Starting OCR…')
         self.detected = tk.StringVar(value='No recent boss')
@@ -179,6 +196,17 @@ class Counter:
         ttk.Button(profiles, text='New game', command=self.new_profile).pack(side='left', padx=3)
         ttk.Button(profiles, text='Export', command=self.export_profile).pack(side='left')
         ttk.Button(profiles, text='Import', command=self.import_profile).pack(side='left', padx=3)
+        runs=ttk.Frame(root)
+        runs.pack(fill='x',padx=10,pady=4)
+        ttk.Label(runs,text='Stats:').pack(side='left',padx=(0,5))
+        self.run_choice=ttk.Combobox(runs,state='readonly',width=20)
+        self.run_choice.pack(side='left',fill='x',expand=True)
+        self.run_choice.bind('<<ComboboxSelected>>',self.change_stats_run)
+        ttk.Button(runs,text='New NG',command=self.start_new_ng).pack(side='left',padx=5)
+        ttk.Button(runs,text='Record in selected NG',command=self.record_selected_ng).pack(side='left')
+        self.recording_run=tk.StringVar()
+        ttk.Label(root,textvariable=self.recording_run).pack()
+        self.update_run_choices()
         ttk.Button(root, text='Upload red death-screen reference for this game', command=self.upload_reference).pack(pady=3)
         import mss
         with mss.mss() as capture:
@@ -247,8 +275,46 @@ class Counter:
 
     def save(self):
         temp = DATA.with_suffix('.tmp')
-        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters, 'use_general_region':self.use_general_region, 'boss_sort':self.boss_sort}, indent=2), encoding='utf-8')
+        temp.write_text(json.dumps({'region': self.region, 'deaths': self.deaths, 'aliases': self.aliases, 'death_region': self.death_region, 'death_template': self.death_template, 'auto_enabled': self.auto_enabled, 'monitor_index': self.monitor_index, 'reference_path': self.reference_path, 'encounters':self.encounters, 'use_general_region':self.use_general_region, 'boss_sort':self.boss_sort,'playthroughs':self.playthroughs,'active_run':self.active_run,'stats_run':self.stats_run}, indent=2), encoding='utf-8')
         temp.replace(DATA)
+
+    def update_run_choices(self):
+        self.run_ids=list(self.playthroughs)+[ng.ALL]
+        self.run_choice.configure(values=[self.playthroughs[key]['name'] if key!=ng.ALL else 'Overall' for key in self.run_ids])
+        self.run_choice.current(self.run_ids.index(self.stats_run))
+        self.recording_run.set('Recording new deaths in: '+self.playthroughs[self.active_run]['name'])
+
+    def change_stats_run(self,_=None):
+        self.stats_run=self.run_ids[self.run_choice.current()]
+        self.save()
+        self.refresh()
+
+    def start_new_ng(self):
+        self.backup_before_edit()
+        self.active_run=ng.create(self.playthroughs)
+        self.stats_run=self.active_run
+        self.screenshots.clear()
+        self.update_run_choices()
+        self.save()
+        self.refresh()
+        self.status.set('New playthrough started. Old stats are available in the Stats dropdown.')
+
+    def record_selected_ng(self):
+        if self.stats_run==ng.ALL:
+            self.status.set('Select an individual NG before changing where deaths are recorded.')
+            return
+        self.active_run=self.stats_run
+        self.screenshots.clear()
+        self.update_run_choices()
+        self.save()
+
+    def fight_title(self,ident,overall=None):
+        encounter=self.encounters[ident]
+        text=fights.label(encounter)
+        show_run=self.stats_run==ng.ALL if overall is None else overall
+        if show_run:
+            text=self.playthroughs.get(encounter.get('run_id',ng.BASE),{'name':'NG'})['name']+' — '+text
+        return text
 
     def toggle_pause(self):
         if self.pause_var.get():
@@ -386,10 +452,11 @@ class Counter:
 
     def refresh(self):
         selected=set(self.table.selection())
-        self.total.set(f'{len(self.deaths)} deaths')
-        totals = {ident:0 for ident in self.encounters}
-        self.row_deaths = {ident:[] for ident in self.encounters}
-        for death in self.deaths:
+        visible=[death for death in self.deaths if ng.includes(death,self.stats_run)]
+        self.total.set(f'{len(visible)} deaths')
+        totals = {ident:0 for ident,encounter in self.encounters.items() if ng.includes(encounter,self.stats_run)}
+        self.row_deaths = {ident:[] for ident in totals}
+        for death in visible:
             ident = death.get('encounter_id','environment')
             totals[ident] = totals.get(ident, 0) + 1
             self.row_deaths.setdefault(ident,[]).append(death)
@@ -397,7 +464,7 @@ class Counter:
         self.table.heading('timestamp',text={'first':'First death','latest':'Latest death','killed':'Killed at'}[self.boss_sort])
         for ident in fights.ordered_fights(self.encounters,self.row_deaths,self.boss_sort):
             count=totals[ident]
-            name=fights.label(self.encounters[ident]) if ident in self.encounters else 'Enemy/environment death'
+            name=self.fight_title(ident) if ident in self.encounters else 'Enemy/environment death'
             stamp=fights.fight_timestamp(self.encounters.get(ident,{}),self.row_deaths[ident],self.boss_sort)
             try:
                 stamp=fights.moment(stamp).astimezone().strftime('%Y-%m-%d %H:%M:%S')
@@ -436,7 +503,7 @@ class Counter:
             self.refresh()
             self.status.set('Killed tag removed. Existing rematches remain separate.')
 
-    def count(self, stamp):
+    def count(self, stamp, run_id=None):
         if self.paused.is_set():
             return
         if abs(stamp - self.last_press) < 2:
@@ -444,7 +511,7 @@ class Counter:
         self.last_press = stamp
         boss = 'Enemy/environment death'
         event_time = datetime.now().astimezone() - timedelta(seconds=max(0, time.monotonic() - stamp))
-        death = {'boss': boss, 'time': event_time.isoformat(timespec='milliseconds'), 'boss_lookup':{'status':'pending'}}
+        death = {'boss': boss, 'time': event_time.isoformat(timespec='milliseconds'), 'boss_lookup':{'status':'pending'},'run_id':run_id or self.active_run}
         error = None
         try:
             death['screenshots'] = self.screenshots.save(DATA.parent / 'death_logs', stamp)
@@ -531,7 +598,8 @@ class Counter:
     def show_log(self,encounter_id=None):
         from PIL import Image, ImageTk
         window = tk.Toplevel(self.root)
-        filtered_name=fights.label(self.encounters[encounter_id]) if encounter_id in self.encounters else 'Enemy/environment death'
+        view=self.stats_run
+        filtered_name=self.fight_title(encounter_id,overall=view==ng.ALL) if encounter_id in self.encounters else 'Enemy/environment death'
         window.title('Death log — '+filtered_name if encounter_id is not None else 'Death log — all fights')
         window.geometry('1100x760')
         scope=tk.StringVar(value='')
@@ -591,6 +659,8 @@ class Counter:
             entries.clear()
             restored = []
             for death in reversed(self.deaths):
+                if not ng.includes(death,view):
+                    continue
                 if encounter_id is not None and death.get('encounter_id','environment')!=encounter_id:
                     continue
                 shots = death.get('screenshots', {})
@@ -599,12 +669,14 @@ class Counter:
                 lookup_state=details.get('status','Not recorded')
                 if lookup_state=='confirmed':
                     lookup_state+=': '+details.get('source','')
-                ident = table.insert('', 'end', values=(death['time'], fights.death_label(death,self.encounters), before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable',lookup_state))
+                title=self.fight_title(death['encounter_id'],overall=view==ng.ALL) if death.get('encounter_id') in self.encounters else death['boss']
+                ident = table.insert('', 'end', values=(death['time'], title, before['time'] if before else 'Unavailable', current['time'] if current else 'Unavailable',lookup_state))
                 entries[ident] = death
                 if id(death) in selected_deaths:
                     restored.append(ident)
             name=fights.label(self.encounters[encounter_id]) if encounter_id in self.encounters else filtered_name
-            scope.set(f'Only this fight: {name} — {len(entries)} death(s)' if encounter_id is not None else f'All fights — {len(entries)} death(s)')
+            run_name='Overall' if view==ng.ALL else self.playthroughs[view]['name']
+            scope.set(f'Only this fight: {name} — {len(entries)} death(s)' if encounter_id is not None else f'{run_name}: all fights — {len(entries)} death(s)')
             if entries:
                 table.selection_set(restored or [next(iter(entries))])
                 display()
@@ -627,7 +699,10 @@ class Counter:
             chosen = [entries[item] for item in table.selection() if item in entries]
             if not chosen:
                 return
-            target = self.pick_category(f'Move {len(chosen)} selected death(s)', fights.death_label(chosen[0],self.encounters), window)
+            if len({death.get('run_id',ng.BASE) for death in chosen})>1:
+                messagebox.showinfo('Separate playthroughs','Select deaths from one NG at a time.',parent=window)
+                return
+            target = self.pick_category(f'Move {len(chosen)} selected death(s)', fights.death_label(chosen[0],self.encounters), window,run_id=chosen[0].get('run_id',ng.BASE))
             if target:
                 self.backup_before_edit()
                 self.move_to_fight(chosen,target)
@@ -661,8 +736,9 @@ class Counter:
         return window
 
     def undo(self):
-        if self.deaths:
-            removed = self.deaths.pop()
+        index=next((i for i in range(len(self.deaths)-1,-1,-1) if self.deaths[i].get('run_id',ng.BASE)==self.active_run),None)
+        if index is not None:
+            removed = self.deaths.pop(index)
             self.save()
             self.refresh()
             self.status.set(f'Undid death for {removed["boss"]}')
@@ -671,6 +747,9 @@ class Counter:
         selected = self.table.selection()
         new = self.correction.get().strip()
         if not selected or not new:
+            return
+        if len({death.get('run_id',ng.BASE) for death in self.row_deaths.get(selected[0],[])})>1:
+            messagebox.showinfo('Separate playthroughs','Select an individual NG before renaming its environment category.')
             return
         self.backup_before_edit()
         encounter=self.encounters.get(selected[0])
@@ -692,13 +771,14 @@ class Counter:
             folder.mkdir(exist_ok=True)
             shutil.copy2(DATA,folder / f"before-edit-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json")
 
-    def pick_category(self, title, initial='', parent=None):
+    def pick_category(self, title, initial='', parent=None,run_id=None):
         dialog = tk.Toplevel(parent or self.root)
         dialog.title(title)
         dialog.transient(parent or self.root)
         dialog.grab_set()
         ttk.Label(dialog,text='Choose an existing category or type a new name:').pack(padx=15,pady=10)
-        choices = sorted({fights.label(encounter) for encounter in self.encounters.values()} | {'Enemy/environment death'})
+        run_id=run_id or self.active_run
+        choices = sorted({fights.label(encounter) for encounter in self.encounters.values() if encounter.get('run_id',ng.BASE)==run_id} | {'Enemy/environment death'})
         target = ttk.Combobox(dialog,values=choices,width=55)
         target.set(initial)
         target.pack(padx=15,pady=5)
@@ -724,7 +804,14 @@ class Counter:
         if not selected:
             self.status.set('Select the boss categories to merge first (Ctrl-click for several).')
             return
-        target=self.pick_category('Merge selected categories',self.table.item(selected[0],'values')[0])
+        chosen=[death for ident in selected for death in self.row_deaths.get(ident,[])]
+        run_ids={death.get('run_id',ng.BASE) for death in chosen}|{self.encounters[ident].get('run_id',ng.BASE) for ident in selected if ident in self.encounters}
+        if len(run_ids)>1:
+            messagebox.showinfo('Separate playthroughs','Fights from different NG cycles cannot be merged.')
+            return
+        run_id=next(iter(run_ids),self.active_run)
+        initial=fights.label(self.encounters[selected[0]]) if selected[0] in self.encounters else 'Enemy/environment death'
+        target=self.pick_category('Merge selected categories',initial,run_id=run_id)
         if target:
             self.backup_before_edit()
             chosen=[death for ident in selected for death in self.row_deaths.get(ident,[])]
@@ -734,7 +821,12 @@ class Counter:
             self.status.set(f'Merged {changed} death(s) into {target}')
 
     def move_to_fight(self, chosen, target, remember_alias=False, preserve_status=False):
-        labels={fights.label(encounter):ident for ident,encounter in self.encounters.items()}
+        run_ids={death.get('run_id',ng.BASE) for death in chosen}
+        if len(run_ids)>1:
+            raise ValueError('Deaths cannot be merged across NG cycles')
+        run_id=next(iter(run_ids),self.active_run)
+        candidates={ident:encounter for ident,encounter in self.encounters.items() if encounter.get('run_id',ng.BASE)==run_id}
+        labels={fights.label(encounter):ident for ident,encounter in candidates.items()}
         ident=labels.get(target)
         created=False
         if ident:
@@ -743,11 +835,11 @@ class Counter:
             boss='Enemy/environment death'
         else:
             boss=target.strip()
-            matching=[(key,e) for key,e in self.encounters.items() if e['boss'].casefold()==boss.casefold()]
+            matching=[(key,e) for key,e in candidates.items() if e['boss'].casefold()==boss.casefold()]
             if matching:
                 ident=max(matching,key=lambda pair:pair[1]['number'])[0]
             else:
-                ident=fights.new_encounter(self.encounters,boss,min((d['time'] for d in chosen),default=datetime.now().astimezone().isoformat()))
+                ident=fights.new_encounter(self.encounters,boss,min((d['time'] for d in chosen),default=datetime.now().astimezone().isoformat()),run_id)
                 created=True
         previous={death['boss'] for death in chosen}
         source_ids={death.get('encounter_id') for death in chosen}
@@ -855,6 +947,7 @@ class Counter:
                 if not self.auto_enabled or self.paused.is_set():
                     gate = DeathGate()
                     continue
+                run_id=self.active_run
                 latest = self.screenshots.latest_frame()
                 if latest is None:
                     continue
@@ -866,7 +959,7 @@ class Counter:
                 onset = gate.update(score >= 0.65, stamp)
                 self.events.put(('death_status', f'Death symbol match: {score:.0%}' + (' — waiting for symbol to clear' if gate.active else ' — watching')))
                 if onset is not None:
-                    self.events.put(('death', onset))
+                    self.events.put(('death', (onset,run_id)))
         except Exception as exc:
             self.events.put(('death_status', f'Automatic detection unavailable: {exc}'))
 
@@ -884,7 +977,8 @@ class Counter:
             while not self.stop.wait(0.02):
                 while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                     if msg.message == 0x0312:
-                        self.events.put(({1:'death', 2:'undo', 3:'diagnostic'}[msg.wParam], time.monotonic()))
+                        stamp=time.monotonic()
+                        self.events.put(({1:'death', 2:'undo', 3:'diagnostic'}[msg.wParam], (stamp,self.active_run) if msg.wParam==1 else stamp))
         finally:
             for ident in registered:
                 user32.UnregisterHotKey(None, ident)
@@ -896,7 +990,7 @@ class Counter:
             except queue.Empty:
                 break
             if kind == 'death':
-                self.count(value)
+                self.count(*value) if isinstance(value,tuple) else self.count(value)
             elif kind == 'undo':
                 self.undo()
             elif kind == 'diagnostic':

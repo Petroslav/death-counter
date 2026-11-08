@@ -9,6 +9,20 @@ from death_log import ScreenshotLog, before_frame, encode
 
 
 class LogTests(unittest.TestCase):
+    def test_clearing_buffer_rejects_inflight_previous_ng_frame(self):
+        stop=threading.Event()
+        log=ScreenshotLog(stop,self.fail)
+        def grab(_):
+            log.clear()
+            stop.set()
+            return np.zeros((60,80,4),dtype=np.uint8)
+        with patch('death_log.mss.mss') as capture:
+            mock=capture.return_value.__enter__.return_value
+            mock.monitors=[None,{}]
+            mock.grab.side_effect=grab
+            log.run()
+        self.assertFalse(log.frames)
+        self.assertIsNone(log.latest_frame())
     def test_paused_capture_does_not_grab_and_clears_history(self):
         stop = threading.Event()
         log = ScreenshotLog(stop, self.fail, enabled=lambda: False)

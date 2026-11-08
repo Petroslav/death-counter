@@ -8,6 +8,7 @@ profiles/
 profiles.json
 counter.before-profiles.json
 counter.before-encounters.json
+counter.before-ng.json
 custom-death-reference.png
 data/
 backups/
